@@ -1,0 +1,31 @@
+services:
+  bot:
+    build: .
+    container_name: ai_lead_bot
+    restart: unless-stopped
+
+    # Load all secrets from .env file (never committed to git)
+    env_file:
+      - .env
+
+    volumes:
+      # Persist SQLite database across container restarts
+      - bot_data:/app/data
+
+      # Mount Google service account credentials (read-only)
+      - ./credentials.json:/app/credentials.json:ro
+
+      # Optionally mount knowledge_base.txt for hot updates without rebuild.
+      # Comment out if you prefer to bake it into the image.
+      - ./knowledge_base.txt:/app/knowledge_base.txt:ro
+
+    # Resource limits — tune for your VPS
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  # Named volume: data survives container removal, managed by Docker
+  bot_data:
+    driver: local

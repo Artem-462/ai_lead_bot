@@ -1,0 +1,27 @@
+# Secrets — never bake into the image
+.env
+credentials.json
+
+# Runtime data — managed by Docker volume
+data/
+
+# Virtual environments
+venv/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Git
+.git
+.gitignore
+
+# IDE & OS
+.idea/
+.vscode/
+*.DS_Store
+
+# Docs (not needed at runtime)
+README.md
