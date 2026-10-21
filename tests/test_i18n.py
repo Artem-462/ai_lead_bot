@@ -1,7 +1,3 @@
-"""
-tests/test_i18n.py
-Tests for the i18n module (i18n.py).
-"""
 import os
 import sys
 
@@ -14,9 +10,6 @@ if PROJECT_ROOT not in sys.path:
 from i18n import LANG_SELECT_MSG, TEXTS, get_lang, t
 
 
-# ---------------------------------------------------------------------------
-# get_lang()
-# ---------------------------------------------------------------------------
 class TestGetLang:
     def test_uk_code_returns_uk(self):
         assert get_lang("uk") == "uk"
@@ -43,9 +36,6 @@ class TestGetLang:
         assert get_lang("de") == "en"
 
 
-# ---------------------------------------------------------------------------
-# t() — correct strings for known keys
-# ---------------------------------------------------------------------------
 class TestT:
     @pytest.mark.parametrize("lang", ["uk", "en"])
     def test_welcome_key_returns_string(self, lang):
@@ -102,3 +92,24 @@ class TestT:
         uk_keys = set(TEXTS["uk"].keys())
         en_keys = set(TEXTS["en"].keys())
         assert uk_keys == en_keys
+
+    @pytest.mark.parametrize("lang", ["uk", "en"])
+    def test_admin_keys_present(self, lang):
+        admin_keys = [
+            "ibtn_admin",
+            "admin_panel_title",
+            "admin_btn_stats",
+            "admin_btn_docs",
+            "admin_btn_upload",
+            "admin_btn_clear_all",
+            "admin_btn_back",
+            "admin_btn_back_main",
+            "admin_upload_hint",
+            "doc_all_cleared",
+            "admin_del_btn",
+        ]
+        for key in admin_keys:
+            assert key in TEXTS[lang]
+            val = t(key, lang, filename="sample.pdf", count=3)
+            assert len(val) > 0
+
