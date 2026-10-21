@@ -5,6 +5,7 @@ from typing import Any
 from aiogram import BaseMiddleware
 from aiogram.types import Message
 
+import config
 from i18n import get_lang, t
 
 TTL_SECONDS = 120
@@ -35,6 +36,9 @@ class AntiSpamMiddleware(BaseMiddleware):
     ) -> Any:
         self._cleanup()
         user_id = event.from_user.id
+        if config.ADMIN_ID and user_id == config.ADMIN_ID:
+            return await handler(event, data)
+
         now = time.time()
 
         if user_id in self.users_time and (now - self.users_time[user_id]) < self.limit_seconds:

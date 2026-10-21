@@ -1,7 +1,9 @@
 import asyncio
+import html
 import re
 
 from aiogram import F, Router, types
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -42,7 +44,8 @@ async def cancel_handler(event: types.Message | types.CallbackQuery, state: FSMC
         return
 
     await state.clear()
-    await message.answer(t("cancel_form", lang), reply_markup=get_main_keyboard(lang))
+    is_admin = bool(config.ADMIN_ID) and user.id == config.ADMIN_ID
+    await message.answer(t("cancel_form", lang), reply_markup=get_main_keyboard(lang, is_admin=is_admin))
 
 
 @router.message(Command("lead"))
@@ -110,19 +113,24 @@ async def process_request(message: types.Message, state: FSMContext):
         await message.answer(t("lead_error", lang), reply_markup=get_cancel_keyboard(lang))
         return
 
-    await message.answer(t("lead_success", lang), reply_markup=get_main_keyboard(lang))
+    is_admin = bool(config.ADMIN_ID) and message.from_user.id == config.ADMIN_ID
+    await message.answer(t("lead_success", lang), reply_markup=get_main_keyboard(lang, is_admin=is_admin))
     if config.ADMIN_ID:
         try:
             username = f"@{message.from_user.username}" if message.from_user.username else "—"
+            safe_name = html.escape(str(name or ""))
+            safe_phone = html.escape(str(phone or ""))
+            safe_request = html.escape(request)
+            safe_username = html.escape(username)
             admin_text = (
                 f"🔔 <b>Нова заявка!</b>\n\n"
-                f"👤 <b>Ім'я:</b> {name}\n"
-                f"📞 <b>Телефон:</b> {phone}\n"
-                f"📝 <b>Запит:</b> {request}\n"
-                f"✈️ <b>TG:</b> {username} (ID: <code>{message.from_user.id}</code>)"
+                f"👤 <b>Ім'я:</b> {safe_name}\n"
+                f"📞 <b>Телефон:</b> {safe_phone}\n"
+                f"📝 <b>Запит:</b> {safe_request}\n"
+                f"✈️ <b>TG:</b> {safe_username} (ID: <code>{message.from_user.id}</code>)"
             )
             await message.bot.send_message(chat_id=config.ADMIN_ID, text=admin_text)
-        except Exception as e:
+        except (TelegramAPIError, OSError, RuntimeError) as e:
             config.logger.warning(f"Failed to notify admin: {e}")
     await state.clear()
 

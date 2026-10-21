@@ -61,6 +61,33 @@ TEXTS: dict[Language, dict[str, str]] = {
         "llm_empty": "Вибачте, не вдалося сформулювати відповідь. Спробуйте перефразувати.",
         "llm_timeout": "Сервери трохи перевантажені. Повторіть через кілька хвилин.",
         "llm_error": "Вибачте, зараз не можу відповісти. Спробуйте пізніше.",
+        "rag_no_answer": "У завантажених документах немає інформації з цього питання.",
+        "rag_source_footer": "\n\n📄 Джерело: {sources}",
+        "doc_indexing": "⏳ Індексую документ <b>{filename}</b>...",
+        "doc_indexed_new": "✅ Документ <b>{filename}</b> успішно проіндексовано!\nСтворено фрагментів: <b>{chunks}</b>.",
+        "doc_indexed_replaced": "🔄 Документ <b>{filename}</b> оновлено!\nСтару версію замінено. Нових фрагментів: <b>{chunks}</b>.",
+        "doc_unsupported": "⚠️ Непідтримуваний формат файлу. Будь ласка, завантажуйте лише <b>.pdf</b> або <b>.docx</b>.",
+        "doc_list_empty": "📁 База знань порожня. Завантажте .pdf або .docx файли.",
+        "doc_list_header": "📚 <b>Індексовані документи:</b>\n\n{docs}",
+        "doc_deleted": "🗑️ Документ <b>{filename}</b> успішно видалено з бази знань.",
+        "doc_not_found": "❌ Документ <b>{filename}</b> не знайдено в базі знань.",
+        "doc_empty": "⚠️ У документі <b>{filename}</b> не знайдено текстового шару. Можливо, файл порожній або містить лише зображення.",
+        "doc_too_large": "⚠️ Файл занадто великий (максимум 20 МБ).",
+        "ibtn_admin": "⚙️ Адмін-панель",
+        "admin_panel_title": "⚙️ <b>Панель адміністратора</b>\n\nОберіть дію:",
+        "admin_btn_stats": "📊 Статистика",
+        "admin_btn_docs": "📂 Документи в базі",
+        "admin_btn_upload": "📥 Додати документ",
+        "admin_btn_clear_all": "🗑 Очистити всю базу RAG",
+        "admin_btn_back": "⬅️ Назад",
+        "admin_btn_back_main": "⬅️ Головне меню",
+        "admin_upload_hint": (
+            "📥 <b>Додавання документів:</b>\n\n"
+            "Надішліть один або одразу кілька файлів (пачкою) у форматах <b>.pdf</b> або <b>.docx</b> сюди в чат. "
+            "Бот автоматично та послідовно проіндексує їх і оновить базу знань."
+        ),
+        "doc_all_cleared": "🗑 Усі документи ({count}) видалено! Бот перейшов у базовий режим.",
+        "admin_del_btn": "🗑 {filename}",
     },
     "en": {
         "welcome": (
@@ -118,6 +145,33 @@ TEXTS: dict[Language, dict[str, str]] = {
         "llm_empty": "Sorry, I couldn't formulate an answer. Please try rephrasing.",
         "llm_timeout": "My servers are a bit busy. Please try again in a moment.",
         "llm_error": "Sorry, I can't respond right now. Please try again later.",
+        "rag_no_answer": "There is no information on this topic in the uploaded documents.",
+        "rag_source_footer": "\n\n📄 Source: {sources}",
+        "doc_indexing": "⏳ Indexing document <b>{filename}</b>...",
+        "doc_indexed_new": "✅ Document <b>{filename}</b> successfully indexed!\nChunks created: <b>{chunks}</b>.",
+        "doc_indexed_replaced": "🔄 Document <b>{filename}</b> updated!\nPrevious version replaced. New chunks: <b>{chunks}</b>.",
+        "doc_unsupported": "⚠️ Unsupported file format. Please upload only <b>.pdf</b> or <b>.docx</b> files.",
+        "doc_list_empty": "📁 Knowledge base is empty. Upload .pdf or .docx files.",
+        "doc_list_header": "📚 <b>Indexed documents:</b>\n\n{docs}",
+        "doc_deleted": "🗑️ Document <b>{filename}</b> successfully deleted from knowledge base.",
+        "doc_not_found": "❌ Document <b>{filename}</b> not found in knowledge base.",
+        "doc_empty": "⚠️ No text layer found in document <b>{filename}</b>. The file may be empty or contain only images.",
+        "doc_too_large": "⚠️ File is too large (maximum 20 MB).",
+        "ibtn_admin": "⚙️ Admin Panel",
+        "admin_panel_title": "⚙️ <b>Admin Panel</b>\n\nSelect an action:",
+        "admin_btn_stats": "📊 Statistics",
+        "admin_btn_docs": "📂 Documents in KB",
+        "admin_btn_upload": "📥 Add document",
+        "admin_btn_clear_all": "🗑 Clear entire RAG database",
+        "admin_btn_back": "⬅️ Back",
+        "admin_btn_back_main": "⬅️ Main menu",
+        "admin_upload_hint": (
+            "📥 <b>Upload Documents:</b>\n\n"
+            "Send one or multiple files in batch (.pdf or .docx) here in chat. "
+            "The bot will automatically and sequentially index them and update the knowledge base."
+        ),
+        "doc_all_cleared": "🗑 All documents ({count}) deleted! Bot switched to Lite mode.",
+        "admin_del_btn": "🗑 {filename}",
     },
 }
 
