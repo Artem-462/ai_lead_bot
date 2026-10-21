@@ -23,7 +23,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
+          memory: 512M
 
 volumes:
   # Named volume: data survives container removal, managed by Docker
