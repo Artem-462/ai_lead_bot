@@ -1,22 +1,20 @@
-"""
-tests/test_handlers.py
-Tests for handlers/admin.py, handlers/lead_form.py, keyboards.py, and main.py callbacks.
-"""
+import asyncio
+import io
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiogram import types as aiogram_types
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-
-# ---------------------------------------------------------------------------
-# Mock helpers
-# ---------------------------------------------------------------------------
-from aiogram import types as aiogram_types
+import handlers.admin as admin_handler
+import handlers.lead_form as lead_handler
+import keyboards
+from i18n import t
 
 
 class MockMessage(aiogram_types.Message, MagicMock):
@@ -66,18 +64,6 @@ def make_state(current=None, data=None):
     return state
 
 
-# ---------------------------------------------------------------------------
-# Import handlers and keyboards
-# ---------------------------------------------------------------------------
-import handlers.admin as admin_handler
-import handlers.lead_form as lead_handler
-import keyboards
-from i18n import t
-
-# ===========================================================================
-# keyboards.py — InlineKeyboardMarkup structure
-# ===========================================================================
-
 class TestKeyboards:
     def test_language_keyboard(self):
         kb = keyboards.get_language_keyboard()
@@ -95,14 +81,60 @@ class TestKeyboards:
         kb = keyboards.get_cancel_keyboard("uk")
         assert kb is not None
 
+    def test_main_keyboard_is_admin_false(self):
+        kb_uk = keyboards.get_main_keyboard("uk", is_admin=False)
+        datas_uk = [btn.callback_data for row in kb_uk.inline_keyboard for btn in row]
+        assert "admin:panel" not in datas_uk
+        texts_uk = [btn.text for row in kb_uk.inline_keyboard for btn in row]
+        assert not any("Адмін-панель" in txt for txt in texts_uk)
 
-# ===========================================================================
-# handlers/admin.py — cmd_stats
-# ===========================================================================
+        kb_en = keyboards.get_main_keyboard("en", is_admin=False)
+        datas_en = [btn.callback_data for row in kb_en.inline_keyboard for btn in row]
+        assert "admin:panel" not in datas_en
+        texts_en = [btn.text for row in kb_en.inline_keyboard for btn in row]
+        assert not any("Admin Panel" in txt for txt in texts_en)
+
+    def test_main_keyboard_is_admin_true(self):
+        kb_uk = keyboards.get_main_keyboard("uk", is_admin=True)
+        datas_uk = [btn.callback_data for row in kb_uk.inline_keyboard for btn in row]
+        assert "admin:panel" in datas_uk
+        texts_uk = [btn.text for row in kb_uk.inline_keyboard for btn in row]
+        assert any("Адмін-панель" in txt for txt in texts_uk)
+
+        kb_en = keyboards.get_main_keyboard("en", is_admin=True)
+        datas_en = [btn.callback_data for row in kb_en.inline_keyboard for btn in row]
+        assert "admin:panel" in datas_en
+        texts_en = [btn.text for row in kb_en.inline_keyboard for btn in row]
+        assert any("Admin Panel" in txt for txt in texts_en)
+
+    def test_admin_panel_keyboard(self):
+        kb = keyboards.get_admin_panel_keyboard("uk")
+        datas = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+        assert datas == ["admin:stats", "admin:docs", "admin:upload_hint", "admin:back_main"]
+
+    def test_admin_docs_keyboard(self):
+        docs = [{"id": 1, "filename": "test1.pdf"}, {"filename": "test2.docx"}]
+        kb = keyboards.get_admin_docs_keyboard(docs, "uk")
+        datas = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+        assert "admin:del:1" in datas
+        assert "admin:del:test2.docx" in datas
+        assert "admin:clear_all_docs" in datas
+        assert datas[-2] == "admin:clear_all_docs"
+        assert datas[-1] == "admin:panel"
+
+    def test_admin_docs_keyboard_empty(self):
+        kb = keyboards.get_admin_docs_keyboard([], "uk")
+        datas = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+        assert "admin:clear_all_docs" not in datas
+        assert datas == ["admin:panel"]
+
+    def test_admin_back_keyboard(self):
+        kb = keyboards.get_admin_back_keyboard("uk")
+        datas = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+        assert datas == ["admin:panel"]
+
 
 class TestCmdStats:
-    """Tests for the /stats admin command."""
-
     @pytest.mark.asyncio
     async def test_non_admin_receives_no_access_uk(self):
         msg = make_message(user_id=999_999, lang_code="uk")
@@ -168,10 +200,6 @@ class TestCmdStats:
         assert call_text == t("stats_no_access", "uk")
 
 
-# ===========================================================================
-# handlers/lead_form.py — start_lead_form
-# ===========================================================================
-
 class TestStartLeadForm:
     @pytest.mark.asyncio
     async def test_start_via_command(self):
@@ -192,10 +220,6 @@ class TestStartLeadForm:
         state.set_state.assert_awaited_once_with(lead_handler.LeadForm.waiting_for_name)
         cb.message.answer.assert_awaited_once()
 
-
-# ===========================================================================
-# handlers/lead_form.py — process_name
-# ===========================================================================
 
 class TestProcessName:
     @pytest.mark.asyncio
@@ -263,10 +287,6 @@ class TestProcessName:
         state.update_data.assert_awaited()
 
 
-# ===========================================================================
-# handlers/lead_form.py — process_phone
-# ===========================================================================
-
 class TestProcessPhone:
     @pytest.mark.asyncio
     async def test_valid_phone_calls_update_data(self):
@@ -313,10 +333,6 @@ class TestProcessPhone:
         await lead_handler.process_phone(msg, state)
         state.update_data.assert_awaited()
 
-
-# ===========================================================================
-# handlers/lead_form.py — process_request
-# ===========================================================================
 
 class TestProcessRequest:
     @pytest.mark.asyncio
@@ -375,10 +391,38 @@ class TestProcessRequest:
             await lead_handler.process_request(msg, state)
         state.clear.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_admin_notification_html_escaped(self):
+        msg = make_message(text="<script>alert(1)</script>", user_id=777, username="hack<er>&co")
+        state = make_state(data={"lang": "uk", "name": "<b>Bob</b> & Co", "phone": "+380991234567<tag>"})
+        with patch("handlers.lead_form.add_lead_to_sheet", return_value=True), \
+             patch("handlers.lead_form.config") as mock_cfg:
+            mock_cfg.ADMIN_ID = 999999
+            await lead_handler.process_request(msg, state)
 
-# ===========================================================================
-# handlers/lead_form.py — cancel_handler (Message & CallbackQuery)
-# ===========================================================================
+        msg.bot.send_message.assert_awaited_once()
+        admin_text = msg.bot.send_message.call_args.kwargs["text"]
+        assert "&lt;b&gt;Bob&lt;/b&gt; &amp; Co" in admin_text
+        assert "+380991234567&lt;tag&gt;" in admin_text
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in admin_text
+        assert "@hack&lt;er&gt;&amp;co" in admin_text
+        assert "<script>" not in admin_text
+
+    @pytest.mark.asyncio
+    async def test_lead_form_html_escaping_name_and_request(self):
+        msg = make_message(text="<script>alert(1)</script> & < 500$", user_id=123)
+        state = make_state(data={"lang": "uk", "name": "<b>John</b>", "phone": "+380991234567"})
+        with patch("handlers.lead_form.add_lead_to_sheet", return_value=True), \
+             patch("handlers.lead_form.config") as mock_cfg:
+            mock_cfg.ADMIN_ID = 999999
+            await lead_handler.process_request(msg, state)
+
+        msg.bot.send_message.assert_awaited_once()
+        admin_text = msg.bot.send_message.call_args.kwargs["text"]
+        assert "&lt;b&gt;John&lt;/b&gt;" in admin_text
+        assert "&lt;script&gt;" in admin_text
+        assert "&lt; 500$" in admin_text
+
 
 class TestCancelHandler:
     @pytest.mark.asyncio
@@ -439,3 +483,334 @@ class TestCancelHandler:
         cb.message.answer.assert_awaited_once()
         call_text = cb.message.answer.call_args[0][0]
         assert call_text == t("cancel_form", "uk")
+
+
+class TestAdminPanel:
+    @pytest.mark.asyncio
+    async def test_show_admin_panel_command_non_admin(self):
+        msg = make_message(user_id=123)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.show_admin_panel(msg)
+        msg.answer.assert_awaited_once()
+        assert t("stats_no_access", "uk") in msg.answer.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_show_admin_panel_command_admin(self):
+        msg = make_message(user_id=999)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.show_admin_panel(msg)
+        msg.answer.assert_awaited_once()
+        assert t("admin_panel_title", "uk") in msg.answer.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_show_admin_panel_callback_admin(self):
+        cb = make_callback(data="admin:panel", user_id=999)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.show_admin_panel(cb)
+        cb.answer.assert_awaited_once()
+        cb.message.edit_text.assert_awaited_once()
+        assert t("admin_panel_title", "uk") in cb.message.edit_text.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_show_admin_panel_callback_non_admin(self):
+        cb = make_callback(data="admin:panel", user_id=123)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.show_admin_panel(cb)
+        cb.answer.assert_awaited_once_with(t("stats_no_access", "uk"), show_alert=True)
+        cb.message.edit_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_show_admin_panel_callback_no_admin_configured(self):
+        cb = make_callback(data="admin:panel", user_id=123)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = None
+            await admin_handler.show_admin_panel(cb)
+        cb.answer.assert_awaited_once_with(t("stats_no_access", "uk"), show_alert=True)
+
+    @pytest.mark.asyncio
+    async def test_admin_stats_callback(self):
+        cb = make_callback(data="admin:stats", user_id=999)
+        stats = {"total": 10, "users": 5, "today": 2}
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.get_dialog_stats", new_callable=AsyncMock, return_value=stats):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_stats(cb)
+        cb.answer.assert_awaited_once()
+        cb.message.edit_text.assert_awaited_once()
+        assert "10" in cb.message.edit_text.call_args[0][0]
+        markup = cb.message.edit_text.call_args.kwargs.get("reply_markup")
+        assert markup is not None
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        assert "admin:panel" in callbacks
+
+    @pytest.mark.asyncio
+    async def test_admin_stats_callback_non_admin(self):
+        cb = make_callback(data="admin:stats", user_id=123)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_stats(cb)
+        cb.answer.assert_awaited_once_with(t("stats_no_access", "uk"), show_alert=True)
+        cb.message.edit_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_admin_docs_callback_empty(self):
+        cb = make_callback(data="admin:docs", user_id=999)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.list_documents", new_callable=AsyncMock, return_value=[]):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_docs(cb)
+        cb.answer.assert_awaited_once()
+        cb.message.edit_text.assert_awaited_once()
+        assert t("doc_list_empty", "uk") in cb.message.edit_text.call_args[0][0]
+        markup = cb.message.edit_text.call_args.kwargs.get("reply_markup")
+        assert markup is not None
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        assert "admin:panel" in callbacks
+
+    @pytest.mark.asyncio
+    async def test_admin_docs_callback_non_empty(self):
+        cb = make_callback(data="admin:docs", user_id=999)
+        sample_docs = [{"id": 1, "filename": "sample.pdf", "file_type": "pdf", "chunk_count": 3, "uploaded_at": "2026-10-22 12:00:00"}]
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.list_documents", new_callable=AsyncMock, return_value=sample_docs):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_docs(cb)
+        cb.answer.assert_awaited_once()
+        cb.message.edit_text.assert_awaited_once()
+        assert "sample.pdf" in cb.message.edit_text.call_args[0][0]
+        markup = cb.message.edit_text.call_args.kwargs.get("reply_markup")
+        assert markup is not None
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        assert "admin:del:1" in callbacks
+        assert "admin:panel" in callbacks
+
+    @pytest.mark.asyncio
+    async def test_admin_docs_callback_non_admin(self):
+        cb = make_callback(data="admin:docs", user_id=123)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_docs(cb)
+        cb.answer.assert_awaited_once_with(t("stats_no_access", "uk"), show_alert=True)
+        cb.message.edit_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_admin_upload_hint_callback(self):
+        cb = make_callback(data="admin:upload_hint", user_id=999)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_upload_hint(cb)
+        cb.answer.assert_awaited_once()
+        cb.message.edit_text.assert_awaited_once()
+        assert t("admin_upload_hint", "uk") in cb.message.edit_text.call_args[0][0]
+        markup = cb.message.edit_text.call_args.kwargs.get("reply_markup")
+        assert markup is not None
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        assert "admin:panel" in callbacks
+
+    @pytest.mark.asyncio
+    async def test_admin_upload_hint_callback_non_admin(self):
+        cb = make_callback(data="admin:upload_hint", user_id=123)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_upload_hint(cb)
+        cb.answer.assert_awaited_once_with(t("stats_no_access", "uk"), show_alert=True)
+        cb.message.edit_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_admin_del_doc_by_id_callback(self):
+        cb = make_callback(data="admin:del:1", user_id=999)
+        sample_docs = [{"id": 1, "filename": "sample.pdf", "file_type": "pdf", "chunk_count": 3, "uploaded_at": "2026-10-22"}]
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.list_documents", new_callable=AsyncMock, side_effect=[sample_docs, []]), \
+             patch("handlers.admin.delete_document_by_id", new_callable=AsyncMock, return_value=True) as mock_del:
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_delete_doc(cb)
+        mock_del.assert_awaited_once_with(1)
+        cb.answer.assert_awaited_once_with(t("doc_deleted", "uk", filename="sample.pdf"))
+        cb.message.edit_text.assert_awaited_once()
+        assert t("doc_list_empty", "uk") in cb.message.edit_text.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_admin_del_doc_by_name_callback(self):
+        cb = make_callback(data="admin:del:sample.pdf", user_id=999)
+        sample_docs = [{"id": 1, "filename": "sample.pdf", "file_type": "pdf", "chunk_count": 3, "uploaded_at": "2026-10-22"}]
+        remaining_docs = [{"id": 2, "filename": "other.docx", "file_type": "docx", "chunk_count": 2, "uploaded_at": "2026-10-22"}]
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.list_documents", new_callable=AsyncMock, side_effect=[sample_docs, remaining_docs]), \
+             patch("handlers.admin.delete_document_by_name", new_callable=AsyncMock, return_value=True) as mock_del:
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_delete_doc(cb)
+        mock_del.assert_awaited_once_with("sample.pdf")
+        cb.answer.assert_awaited_once_with(t("doc_deleted", "uk", filename="sample.pdf"))
+        cb.message.edit_text.assert_awaited_once()
+        assert "other.docx" in cb.message.edit_text.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_admin_del_doc_callback_non_admin(self):
+        cb = make_callback(data="admin:del:1", user_id=123)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_delete_doc(cb)
+        cb.answer.assert_awaited_once_with(t("stats_no_access", "uk"), show_alert=True)
+        cb.message.edit_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_admin_back_main_callback(self):
+        cb = make_callback(data="admin:back_main", user_id=999)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_back_main(cb)
+        cb.answer.assert_awaited_once()
+        cb.message.edit_text.assert_awaited_once()
+        assert t("welcome", "uk", name="Test") in cb.message.edit_text.call_args[0][0]
+        markup = cb.message.edit_text.call_args.kwargs.get("reply_markup")
+        assert markup is not None
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        assert "admin:panel" in callbacks
+
+    @pytest.mark.asyncio
+    async def test_admin_back_main_callback_non_admin(self):
+        cb = make_callback(data="admin:back_main", user_id=123)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_back_main(cb)
+        cb.answer.assert_awaited_once_with(t("stats_no_access", "uk"), show_alert=True)
+        cb.message.edit_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_upload_non_admin_rejected(self):
+        msg = make_message(user_id=123)
+        msg.document = MagicMock()
+        msg.document.file_name = "test.pdf"
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.handle_document_upload(msg)
+        msg.answer.assert_awaited_once_with(t("non_text", "uk"))
+
+    @pytest.mark.asyncio
+    async def test_admin_clear_all_docs_callback_admin(self):
+        cb = make_callback(data="admin:clear_all_docs", user_id=999)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.clear_all_documents", new_callable=AsyncMock, return_value=3) as mock_clear:
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_clear_all_docs(cb)
+        mock_clear.assert_awaited_once()
+        cb.answer.assert_awaited_once_with(t("doc_all_cleared", "uk", count=3), show_alert=True)
+        cb.message.edit_text.assert_awaited_once()
+        assert t("doc_list_empty", "uk") in cb.message.edit_text.call_args[0][0]
+        markup = cb.message.edit_text.call_args.kwargs.get("reply_markup")
+        assert markup is not None
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        assert "admin:panel" in callbacks
+
+    @pytest.mark.asyncio
+    async def test_admin_clear_all_docs_callback_non_admin(self):
+        cb = make_callback(data="admin:clear_all_docs", user_id=123)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.clear_all_documents", new_callable=AsyncMock) as mock_clear:
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_clear_all_docs(cb)
+        mock_clear.assert_not_awaited()
+        cb.answer.assert_awaited_once_with(t("stats_no_access", "uk"), show_alert=True)
+        cb.message.edit_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_handle_document_upload_uses_index_lock(self):
+        import io
+        msg = make_message(user_id=999)
+        msg.document = MagicMock()
+        msg.document.file_name = "test.pdf"
+        msg.document.file_size = 1024
+        msg.bot.download = AsyncMock(return_value=io.BytesIO(b"dummy pdf bytes"))
+        wait_msg = MagicMock()
+        wait_msg.edit_text = AsyncMock()
+        msg.answer = AsyncMock(return_value=wait_msg)
+
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.index_document", new_callable=AsyncMock, return_value={"is_replaced": False, "chunk_count": 5}) as mock_idx:
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.handle_document_upload(msg)
+
+        mock_idx.assert_awaited_once_with("test.pdf", b"dummy pdf bytes")
+        wait_msg.edit_text.assert_awaited_once()
+        assert "5" in wait_msg.edit_text.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_admin_clear_all_docs_callback(self):
+        cb_admin = make_callback(data="admin:clear_all_docs", user_id=999)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.clear_all_documents", new_callable=AsyncMock, return_value=3) as mock_clear:
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_clear_all_docs(cb_admin)
+        mock_clear.assert_awaited_once()
+        cb_admin.answer.assert_awaited_once_with(t("doc_all_cleared", "uk", count=3), show_alert=True)
+        cb_admin.message.edit_text.assert_awaited_once()
+        assert t("doc_list_empty", "uk") in cb_admin.message.edit_text.call_args[0][0]
+
+        cb_non_admin = make_callback(data="admin:clear_all_docs", user_id=123)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.clear_all_documents", new_callable=AsyncMock) as mock_clear_unauth:
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_clear_all_docs(cb_non_admin)
+        mock_clear_unauth.assert_not_awaited()
+        cb_non_admin.answer.assert_awaited_once_with(t("stats_no_access", "uk"), show_alert=True)
+        cb_non_admin.message.edit_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_batch_document_upload_concurrent(self):
+        doc_names = ["doc1.pdf", "doc2.pdf", "doc3.docx"]
+        messages = []
+        wait_messages = []
+        for name in doc_names:
+            msg = make_message(user_id=999)
+            msg.document = MagicMock()
+            msg.document.file_name = name
+            msg.document.file_size = 1024
+            wait_msg = MagicMock()
+            wait_msg.edit_text = AsyncMock()
+            msg.answer = AsyncMock(return_value=wait_msg)
+            msg.bot.download = AsyncMock(return_value=io.BytesIO(b"content"))
+            messages.append(msg)
+            wait_messages.append(wait_msg)
+
+        async def fake_index(filename, file_bytes):
+            await asyncio.sleep(0.01)
+            return {"is_replaced": False, "chunk_count": 3}
+
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.index_document", side_effect=fake_index) as mock_index:
+            mock_cfg.ADMIN_ID = 999
+            await asyncio.gather(*[admin_handler.handle_document_upload(m) for m in messages])
+
+        assert mock_index.await_count == 3
+        for name, wait_msg in zip(doc_names, wait_messages):
+            wait_msg.edit_text.assert_awaited_once()
+            assert t("doc_indexed_new", "uk", filename=name, chunks=3) in wait_msg.edit_text.call_args[0][0]

@@ -1,8 +1,3 @@
-"""
-tests/test_db.py
-Tests for services/db.py using a temporary SQLite file.
-The module-level DB_FILE is monkeypatched before every call so no real DB is touched.
-"""
 import importlib.util
 import os
 import sqlite3
@@ -210,3 +205,132 @@ class TestUserLanguage:
         await db_module.set_user_language(2, "en")
         assert await db_module.get_user_language(1) == "uk"
         assert await db_module.get_user_language(2) == "en"
+
+
+class TestChunksCache:
+    async def test_has_documents_empty_and_populated(self, monkeypatch, tmp_db):
+        _patch_db(monkeypatch, tmp_db)
+        await db_module.init_db()
+        assert await db_module.has_documents() is False
+
+        sample_chunks = [
+            {"page_number": 1, "chunk_index": 0, "content": "Sample content", "embedding": [0.1, 0.2]}
+        ]
+        await db_module.upsert_document("doc1.pdf", "pdf", sample_chunks)
+        assert await db_module.has_documents() is True
+
+    async def test_chunks_cache_caching_and_invalidation(self, monkeypatch, tmp_db):
+        _patch_db(monkeypatch, tmp_db)
+        await db_module.init_db()
+
+        sample_chunks = [
+            {"page_number": 1, "chunk_index": 0, "content": "Text 1", "embedding": [0.1, 0.2]}
+        ]
+        await db_module.upsert_document("doc1.pdf", "pdf", sample_chunks)
+
+        # Cache is initially invalidated (None)
+        assert db_module._chunks_cache is None
+
+        # First read populates cache
+        chunks1 = await db_module.get_all_chunks_with_metadata()
+        assert len(chunks1) == 1
+        assert db_module._chunks_cache is not None
+        assert db_module._chunks_cache is chunks1
+
+        # Second read returns same cached object without hitting sqlite
+        chunks2 = await db_module.get_all_chunks_with_metadata()
+        assert chunks2 is chunks1
+
+        # Invalidate manually
+        db_module.invalidate_chunks_cache()
+        assert db_module._chunks_cache is None
+
+        # Re-populates on next call
+        chunks3 = await db_module.get_all_chunks_with_metadata()
+        assert chunks3 is not None
+        assert db_module._chunks_cache is not None
+
+        # Upsert invalidates cache
+        await db_module.upsert_document("doc2.pdf", "pdf", sample_chunks)
+        assert db_module._chunks_cache is None
+
+        # Re-populate
+        await db_module.get_all_chunks_with_metadata()
+        assert db_module._chunks_cache is not None
+
+        # Delete invalidates cache
+        await db_module.delete_document_by_name("doc1.pdf")
+        assert db_module._chunks_cache is None
+
+
+class TestDocumentsManagement:
+    async def test_list_documents_includes_id(self, monkeypatch, tmp_db):
+        _patch_db(monkeypatch, tmp_db)
+        await db_module.init_db()
+        sample_chunks = [
+            {"page_number": 1, "chunk_index": 0, "content": "Text 1", "embedding": [0.1, 0.2]}
+        ]
+        await db_module.upsert_document("doc1.pdf", "pdf", sample_chunks)
+        docs = await db_module.list_documents()
+        assert len(docs) == 1
+        assert "id" in docs[0]
+        assert isinstance(docs[0]["id"], int)
+        assert docs[0]["filename"] == "doc1.pdf"
+
+    async def test_delete_document_by_id_success(self, monkeypatch, tmp_db):
+        _patch_db(monkeypatch, tmp_db)
+        await db_module.init_db()
+        sample_chunks = [
+            {"page_number": 1, "chunk_index": 0, "content": "Text 1", "embedding": [0.1, 0.2]}
+        ]
+        await db_module.upsert_document("doc1.pdf", "pdf", sample_chunks)
+        docs = await db_module.list_documents()
+        doc_id = docs[0]["id"]
+        res = await db_module.delete_document_by_id(doc_id)
+        assert res is True
+        remaining = await db_module.list_documents()
+        assert len(remaining) == 0
+
+    async def test_delete_document_by_id_not_found(self, monkeypatch, tmp_db):
+        _patch_db(monkeypatch, tmp_db)
+        await db_module.init_db()
+        res = await db_module.delete_document_by_id(99999)
+        assert res is False
+
+    async def test_clear_all_documents(self, monkeypatch, tmp_db):
+        _patch_db(monkeypatch, tmp_db)
+        await db_module.init_db()
+        chunks1 = [
+            {"page_number": 1, "chunk_index": 0, "content": "Text 1", "embedding": [0.1, 0.2]}
+        ]
+        chunks2 = [
+            {"page_number": 1, "chunk_index": 0, "content": "Text 2", "embedding": [0.3, 0.4]}
+        ]
+        await db_module.upsert_document("doc1.pdf", "pdf", chunks1)
+        await db_module.upsert_document("doc2.docx", "docx", chunks2)
+
+        docs = await db_module.list_documents()
+        assert len(docs) == 2
+        assert await db_module.has_documents() is True
+
+        deleted_count = await db_module.clear_all_documents()
+        assert deleted_count == 2
+        assert await db_module.list_documents() == []
+        assert await db_module.has_documents() is False
+
+    async def test_clear_all_documents_success(self, monkeypatch, tmp_db):
+        _patch_db(monkeypatch, tmp_db)
+        await db_module.init_db()
+        sample_chunks = [
+            {"page_number": 1, "chunk_index": 0, "content": "Text 1", "embedding": [0.1, 0.2]}
+        ]
+        await db_module.upsert_document("doc1.pdf", "pdf", sample_chunks)
+        await db_module.upsert_document("doc2.docx", "docx", sample_chunks)
+        assert len(await db_module.list_documents()) == 2
+
+        count = await db_module.clear_all_documents()
+        assert count == 2
+        assert len(await db_module.list_documents()) == 0
+        assert await db_module.has_documents() is False
+        assert db_module._chunks_cache is None
+

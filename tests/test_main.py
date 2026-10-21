@@ -1,7 +1,3 @@
-"""
-tests/test_main.py
-Tests for main.py handlers: /start, language selection callback, /language, menu callbacks, and AI chat.
-"""
 import os
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -13,11 +9,37 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 import main
+from handlers import admin, lead_form
 from i18n import LANG_SELECT_MSG, t
+from middlewares.antispam import AntiSpamMiddleware
 from tests.test_handlers import make_callback, make_message
 
 
 class TestMainHandlers:
+    def test_routers_registration_order(self):
+        assert len(main.dp.sub_routers) >= 3
+        assert main.dp.sub_routers[0] == lead_form.router
+        assert main.dp.sub_routers[1] == admin.router
+        assert main.dp.sub_routers[2] == main.user_router
+
+    @pytest.mark.asyncio
+    async def test_cmd_start_logs_non_admin_connection(self):
+        msg = make_message(text="/start", user_id=123)
+        with patch("main.config.ADMIN_ID", 999), \
+             patch("main.config.logger.info") as mock_log, \
+             patch("main.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            await main.cmd_start(msg)
+            mock_log.assert_called_with("User %s connected (ADMIN_ID configured as %s)", 123, 999)
+
+    @pytest.mark.asyncio
+    async def test_cmd_start_does_not_log_admin_connection(self):
+        msg = make_message(text="/start", user_id=999)
+        with patch("main.config.ADMIN_ID", 999), \
+             patch("main.config.logger.info") as mock_log, \
+             patch("main.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            await main.cmd_start(msg)
+            assert not any("ADMIN_ID configured as" in str(call) for call in mock_log.call_args_list)
+
     @pytest.mark.asyncio
     async def test_cmd_start_new_user_prompts_language(self):
         msg = make_message(text="/start", user_id=123)
@@ -125,3 +147,33 @@ class TestMainHandlers:
             mock_ai.assert_awaited_once_with(123, "Hello AI", "uk")
             wait_msg.edit_text.assert_awaited_once_with("ШІ відповідь", parse_mode=None)
             mock_log.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_antispam_admin_bypass_multiple_messages(self):
+        middleware = AntiSpamMiddleware(limit_seconds=2)
+        handler = AsyncMock(return_value="ok")
+        msg = make_message(user_id=999, lang_code="uk")
+
+        with patch("middlewares.antispam.config.ADMIN_ID", 999):
+            for _ in range(3):
+                res = await middleware(handler, msg, {})
+                assert res == "ok"
+
+        assert handler.await_count == 3
+        msg.answer.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_antispam_regular_user_throttled(self):
+        middleware = AntiSpamMiddleware(limit_seconds=2)
+        handler = AsyncMock(return_value="ok")
+        msg = make_message(user_id=123, lang_code="uk")
+
+        with patch("middlewares.antispam.config.ADMIN_ID", 999):
+            first_res = await middleware(handler, msg, {})
+            assert first_res == "ok"
+
+            second_res = await middleware(handler, msg, {})
+            assert second_res is None
+
+        assert handler.await_count == 1
+        msg.answer.assert_awaited_once_with(t("antispam_warn", "uk"))
