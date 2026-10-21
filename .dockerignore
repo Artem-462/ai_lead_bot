@@ -23,5 +23,10 @@ __pycache__/
 .vscode/
 *.DS_Store
 
+# Tests & linter caches
+tests/
+.pytest_cache/
+.ruff_cache/
+
 # Docs (not needed at runtime)
 README.md
