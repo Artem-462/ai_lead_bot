@@ -1,8 +1,10 @@
 import asyncio
 
-from aiogram import Bot, Dispatcher, F, types
+import aiosqlite
+from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.types import ReplyKeyboardRemove
 
@@ -16,15 +18,20 @@ from services.llm import get_ai_answer
 
 bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
+user_router = Router()
 
 dp.message.middleware(AntiSpamMiddleware(limit_seconds=2))
 dp.include_router(lead_form.router)
 dp.include_router(admin.router)
+dp.include_router(user_router)
 
 
-@dp.message(CommandStart())
+@user_router.message(CommandStart())
 async def cmd_start(message: types.Message) -> None:
     user_id = message.from_user.id
+    if config.ADMIN_ID and user_id != config.ADMIN_ID:
+        config.logger.info("User %s connected (ADMIN_ID configured as %s)", user_id, config.ADMIN_ID)
+
     await message.answer("👋", reply_markup=ReplyKeyboardRemove())
 
     lang = await get_user_language(user_id)
@@ -33,19 +40,20 @@ async def cmd_start(message: types.Message) -> None:
         return
 
     name = message.from_user.first_name or ""
+    is_admin = bool(config.ADMIN_ID) and user_id == config.ADMIN_ID
     await message.answer(
         t("welcome", lang, name=name),
-        reply_markup=get_main_keyboard(lang),
+        reply_markup=get_main_keyboard(lang, is_admin=is_admin),
     )
 
 
-@dp.message(Command("language"))
+@user_router.message(Command("language"))
 async def cmd_language(message: types.Message) -> None:
     await message.answer("🌐", reply_markup=ReplyKeyboardRemove())
     await message.answer(LANG_SELECT_MSG, reply_markup=get_language_keyboard())
 
 
-@dp.callback_query(F.data.startswith("lang:"))
+@user_router.callback_query(F.data.startswith("lang:"))
 async def handle_language_choice(callback: types.CallbackQuery) -> None:
     selected_lang = callback.data.split(":")[1]
     if selected_lang not in ("uk", "en"):
@@ -56,13 +64,14 @@ async def handle_language_choice(callback: types.CallbackQuery) -> None:
     await callback.answer()
 
     name = callback.from_user.first_name or ""
+    is_admin = bool(config.ADMIN_ID) and user_id == config.ADMIN_ID
     await callback.message.answer(
         t("welcome", selected_lang, name=name),
-        reply_markup=get_main_keyboard(selected_lang),
+        reply_markup=get_main_keyboard(selected_lang, is_admin=is_admin),
     )
 
 
-@dp.callback_query(F.data == "menu:ask_ai")
+@user_router.callback_query(F.data == "menu:ask_ai")
 async def handle_menu_ask_ai(callback: types.CallbackQuery) -> None:
     user_id = callback.from_user.id
     lang = await get_user_language(user_id) or get_lang(callback.from_user.language_code)
@@ -70,38 +79,40 @@ async def handle_menu_ask_ai(callback: types.CallbackQuery) -> None:
     await callback.message.answer(t("ask_ai_hint", lang))
 
 
-@dp.callback_query(F.data == "menu:about")
+@user_router.callback_query(F.data == "menu:about")
 async def handle_menu_about(callback: types.CallbackQuery) -> None:
     user_id = callback.from_user.id
     lang = await get_user_language(user_id) or get_lang(callback.from_user.language_code)
     await callback.answer()
-    await callback.message.answer(t("about", lang), reply_markup=get_main_keyboard(lang))
+    is_admin = bool(config.ADMIN_ID) and user_id == config.ADMIN_ID
+    await callback.message.answer(t("about", lang), reply_markup=get_main_keyboard(lang, is_admin=is_admin))
 
 
-@dp.callback_query(F.data == "menu:language")
+@user_router.callback_query(F.data == "menu:language")
 async def handle_menu_language(callback: types.CallbackQuery) -> None:
     await callback.answer()
     await callback.message.answer(LANG_SELECT_MSG, reply_markup=get_language_keyboard())
 
 
-@dp.message(Command("help"))
+@user_router.message(Command("help"))
 async def cmd_help(message: types.Message) -> None:
     user_id = message.from_user.id
     lang = await get_user_language(user_id) or get_lang(message.from_user.language_code)
+    is_admin = bool(config.ADMIN_ID) and user_id == config.ADMIN_ID
     await message.answer(
         t("help", lang),
-        reply_markup=get_main_keyboard(lang),
+        reply_markup=get_main_keyboard(lang, is_admin=is_admin),
     )
 
 
-@dp.message(~F.text)
+@user_router.message(~F.text)
 async def handle_non_text(message: types.Message) -> None:
     user_id = message.from_user.id
     lang = await get_user_language(user_id) or get_lang(message.from_user.language_code)
     await message.answer(t("non_text", lang))
 
 
-@dp.message(StateFilter(None), F.text)
+@user_router.message(StateFilter(None), F.text)
 async def handle_user_message(message: types.Message) -> None:
     user_id = message.from_user.id
     lang = await get_user_language(user_id)
@@ -117,7 +128,7 @@ async def handle_user_message(message: types.Message) -> None:
 
         username = message.from_user.username or message.from_user.first_name
         await log_dialog(user_id, username, message.text, answer)
-    except Exception as e:
+    except (TelegramAPIError, aiosqlite.Error, TimeoutError, RuntimeError, ValueError, KeyError, OSError) as e:
         config.logger.error("Failed to process user message: %s", e)
         await wait_message.edit_text(t("server_error", lang))
 

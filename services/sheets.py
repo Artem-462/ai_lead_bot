@@ -23,7 +23,7 @@ def get_gc() -> gspread.Client:
 def add_lead_to_sheet(name: str, phone: str, request: str) -> bool:
     try:
         sh = get_gc().open(config.GOOGLE_SHEET_NAME)
-        sh.sheet1.append_row([name, phone, request])
+        sh.sheet1.append_row([name, phone, request], value_input_option="RAW")
         logger.info("Lead saved to Google Sheets: %s (%s)", name, phone)
         return True
     except (gspread.GSpreadException, OSError) as e:
