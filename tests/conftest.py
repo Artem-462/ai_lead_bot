@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import sys
 
@@ -59,6 +60,10 @@ class _ClientError(Exception):
     pass
 _genai_errors.ClientError = _ClientError  # type: ignore
 _genai.errors = _genai_errors  # type: ignore
+
+_gspread = sys.modules["gspread"]
+_gspread.Client = _mock.MagicMock  # type: ignore
+_gspread.service_account = _mock.MagicMock()  # type: ignore
 
 class _PassthroughDecorator:
     def __call__(self, *args, **kwargs):
@@ -182,10 +187,11 @@ sys.modules["aiogram.client"] = _aiogram_client
 sys.modules["aiogram.client.default"] = _aiogram_client_default
 
 _services_pkg = _types.ModuleType("services")
+_services_pkg.__path__ = [os.path.join(PROJECT_ROOT, "services")]
 sys.modules["services"] = _services_pkg
 
 _sheets_mod = _types.ModuleType("services.sheets")
-_sheets_mod.add_lead_to_sheet = _mock.MagicMock(return_value=True)  # type: ignore
+_sheets_mod.add_lead_to_sheet = _mock.AsyncMock(return_value=True)  # type: ignore
 sys.modules["services.sheets"] = _sheets_mod
 _services_pkg.sheets = _sheets_mod  # type: ignore
 
@@ -201,6 +207,7 @@ _db_mod_stub.init_db = _mock.AsyncMock()  # type: ignore
 _db_mod_stub.log_dialog = _mock.AsyncMock()  # type: ignore
 _db_mod_stub.get_dialog_stats = _mock.AsyncMock(return_value={"total": 0, "users": 0, "today": 0})  # type: ignore
 _db_mod_stub.get_stats = _db_mod_stub.get_dialog_stats
+_db_mod_stub.upsert_user = _mock.AsyncMock()  # type: ignore
 _db_mod_stub.set_user_language = _mock.AsyncMock()  # type: ignore
 _db_mod_stub.get_user_language = _mock.AsyncMock(return_value=None)  # type: ignore
 _db_mod_stub.upsert_document = _mock.AsyncMock(return_value={"is_replaced": False, "chunk_count": 0})  # type: ignore
@@ -212,6 +219,18 @@ _db_mod_stub.get_all_chunks_with_metadata = _mock.AsyncMock(return_value=[])  # 
 _db_mod_stub.get_all_chunks_with_Metadata = _db_mod_stub.get_all_chunks_with_metadata  # type: ignore
 _db_mod_stub.has_documents = _mock.AsyncMock(return_value=False)  # type: ignore
 _db_mod_stub.invalidate_chunks_cache = _mock.MagicMock()  # type: ignore
+
+
+def _make_test_lead(**values):
+    from services.models import Lead
+
+    return Lead(id=1, status="pending", attempts=0, **values)
+
+
+_db_mod_stub.create_lead = _mock.AsyncMock(side_effect=_make_test_lead)  # type: ignore
+_db_mod_stub.mark_lead_sent = _mock.AsyncMock()  # type: ignore
+_db_mod_stub.mark_lead_failed = _mock.AsyncMock()  # type: ignore
+_db_mod_stub.get_pending_leads = _mock.AsyncMock(return_value=[])  # type: ignore
 sys.modules["services.db"] = _db_mod_stub
 _services_pkg.db = _db_mod_stub  # type: ignore
 
@@ -224,3 +243,22 @@ _services_pkg.rag = _rag_mod_stub  # type: ignore
 @pytest.fixture
 def tmp_db(tmp_path):
     return str(tmp_path / "test_chat_history.db")
+
+
+@pytest.fixture
+async def db_module(monkeypatch, tmp_db):
+    path = os.path.join(PROJECT_ROOT, "services", "db.py")
+    spec = importlib.util.spec_from_file_location("services.db.testing", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "DB_FILE", tmp_db)
+    try:
+        yield module
+    finally:
+        await module.engine.dispose()
+
+
+@pytest.fixture
+async def real_db(db_module):
+    await db_module.init_db()
+    return db_module

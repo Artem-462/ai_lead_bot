@@ -3,6 +3,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -147,6 +148,17 @@ class TestMainHandlers:
             mock_ai.assert_awaited_once_with(123, "Hello AI", "uk")
             wait_msg.edit_text.assert_awaited_once_with("ШІ відповідь", parse_mode=None)
             mock_log.assert_awaited_once()
+
+    async def test_log_dialog_database_error_is_reported(self):
+        msg = make_message(text="Hello", user_id=123)
+        wait_msg = MagicMock()
+        wait_msg.edit_text = AsyncMock()
+        msg.answer = AsyncMock(return_value=wait_msg)
+        with patch("main.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("main.get_ai_answer", new_callable=AsyncMock, return_value="Answer"), \
+             patch("main.log_dialog", new_callable=AsyncMock, side_effect=SQLAlchemyError("Database unavailable")):
+            await main.handle_user_message(msg)
+        assert wait_msg.edit_text.call_args.args[0] == t("server_error", "uk")
 
     @pytest.mark.asyncio
     async def test_antispam_admin_bypass_multiple_messages(self):

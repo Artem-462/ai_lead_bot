@@ -1,12 +1,12 @@
 import asyncio
 
-import aiosqlite
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.types import ReplyKeyboardRemove
+from sqlalchemy.exc import SQLAlchemyError
 
 import config
 from handlers import admin, lead_form
@@ -128,7 +128,7 @@ async def handle_user_message(message: types.Message) -> None:
 
         username = message.from_user.username or message.from_user.first_name
         await log_dialog(user_id, username, message.text, answer)
-    except (TelegramAPIError, aiosqlite.Error, TimeoutError, RuntimeError, ValueError, KeyError, OSError) as e:
+    except (TelegramAPIError, SQLAlchemyError, TimeoutError, RuntimeError, ValueError, KeyError, OSError) as e:
         config.logger.error("Failed to process user message: %s", e)
         await wait_message.edit_text(t("server_error", lang))
 

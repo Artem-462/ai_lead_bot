@@ -1,17 +1,18 @@
-import asyncio
 import html
 import re
+from uuid import uuid4
 
 from aiogram import F, Router, types
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from sqlalchemy.exc import SQLAlchemyError
 
 import config
 from i18n import get_lang, t
 from keyboards import get_cancel_keyboard, get_main_keyboard
-from services.db import get_user_language
+from services.db import create_lead, get_user_language, mark_lead_failed, mark_lead_sent
 from services.sheets import add_lead_to_sheet
 
 router = Router()
@@ -59,7 +60,7 @@ async def start_lead_form(event: types.Message | types.CallbackQuery, state: FSM
         message = event
 
     lang = await get_user_language(user.id) or get_lang(user.language_code)
-    await state.update_data(lang=lang)
+    await state.update_data(lang=lang, lead_uuid=str(uuid4()))
     await message.answer(t("lead_start", lang), reply_markup=get_cancel_keyboard(lang))
     await state.set_state(LeadForm.waiting_for_name)
 
@@ -104,35 +105,78 @@ async def process_request(message: types.Message, state: FSMContext):
         await message.answer(t("lead_bad_request", lang), reply_markup=get_cancel_keyboard(lang))
         return
 
-    await message.answer(t("lead_saving", lang))
     name = user_data.get("name")
     phone = user_data.get("phone")
+    lead_uuid = user_data.get("lead_uuid") or str(uuid4())
+    await state.update_data(lead_uuid=lead_uuid)
 
-    success = await asyncio.to_thread(add_lead_to_sheet, name, phone, request)
-    if not success:
+    try:
+        lead = await create_lead(
+            user_id=message.from_user.id,
+            username=message.from_user.username,
+            name=name,
+            phone=phone,
+            request_text=request,
+            lead_uuid=lead_uuid,
+        )
+    except (SQLAlchemyError, OSError) as error:
+        config.logger.error(
+            "Failed to persist lead (lead_uuid=%s, error=%s)", lead_uuid, type(error).__name__
+        )
         await message.answer(t("lead_error", lang), reply_markup=get_cancel_keyboard(lang))
         return
 
-    is_admin = bool(config.ADMIN_ID) and message.from_user.id == config.ADMIN_ID
-    await message.answer(t("lead_success", lang), reply_markup=get_main_keyboard(lang, is_admin=is_admin))
-    if config.ADMIN_ID:
-        try:
-            username = f"@{message.from_user.username}" if message.from_user.username else "—"
-            safe_name = html.escape(str(name or ""))
-            safe_phone = html.escape(str(phone or ""))
-            safe_request = html.escape(request)
-            safe_username = html.escape(username)
-            admin_text = (
-                f"🔔 <b>Нова заявка!</b>\n\n"
-                f"👤 <b>Ім'я:</b> {safe_name}\n"
-                f"📞 <b>Телефон:</b> {safe_phone}\n"
-                f"📝 <b>Запит:</b> {safe_request}\n"
-                f"✈️ <b>TG:</b> {safe_username} (ID: <code>{message.from_user.id}</code>)"
-            )
-            await message.bot.send_message(chat_id=config.ADMIN_ID, text=admin_text)
-        except (TelegramAPIError, OSError, RuntimeError) as e:
-            config.logger.warning(f"Failed to notify admin: {e}")
-    await state.clear()
+    try:
+        await message.answer(t("lead_saving", lang))
+        success = lead.status == "sent"
+        if not success:
+            try:
+                success = await add_lead_to_sheet(
+                    lead.name, lead.phone, lead.request_text, lead_uuid=lead.lead_uuid
+                )
+                if not success:
+                    raise RuntimeError("Google Sheets did not accept the lead")
+            except Exception as error:  # noqa: BLE001 - keep accepted leads on any synchronization error
+                success = False
+                await mark_lead_failed(lead.id, f"{type(error).__name__}: {error}")
+                config.logger.warning(
+                    "Lead kept locally after sync failure (lead_uuid=%s, error=%s)",
+                    lead.lead_uuid,
+                    type(error).__name__,
+                )
+            else:
+                await mark_lead_sent(lead.id)
+
+        if config.ADMIN_ID:
+            try:
+                username = f"@{lead.username}" if lead.username else "—"
+                admin_text = (
+                    f"🔔 <b>Нова заявка!</b>\n\n"
+                    f"👤 <b>Ім'я:</b> {html.escape(lead.name)}\n"
+                    f"📞 <b>Телефон:</b> {html.escape(lead.phone)}\n"
+                    f"📝 <b>Запит:</b> {html.escape(lead.request_text)}\n"
+                    f"✈️ <b>TG:</b> {html.escape(username)} (ID: <code>{lead.user_id}</code>)\n"
+                    f"🆔 <code>{html.escape(lead.lead_uuid)}</code>"
+                )
+                if not success:
+                    admin_text += (
+                        "\n\n⚠️ Синхронізація з Google Sheets тимчасово не вдалася. "
+                        "Заявку збережено локально."
+                    )
+                await message.bot.send_message(chat_id=config.ADMIN_ID, text=admin_text)
+            except (TelegramAPIError, OSError, RuntimeError) as error:
+                config.logger.warning(
+                    "Failed to notify admin (lead_uuid=%s, error=%s)",
+                    lead.lead_uuid,
+                    type(error).__name__,
+                )
+
+        is_admin = bool(config.ADMIN_ID) and message.from_user.id == config.ADMIN_ID
+        await message.answer(
+            t("lead_success", lang), reply_markup=get_main_keyboard(lang, is_admin=is_admin)
+        )
+    finally:
+        await state.clear()
 
 
 @router.message(LeadForm.waiting_for_name)

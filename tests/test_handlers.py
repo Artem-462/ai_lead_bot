@@ -1,11 +1,17 @@
 import asyncio
+import importlib.util
 import io
+import logging
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import UUID
 
 import pytest
 from aiogram import types as aiogram_types
+from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -15,6 +21,7 @@ import handlers.admin as admin_handler
 import handlers.lead_form as lead_handler
 import keyboards
 from i18n import t
+from services.models import Lead
 
 
 class MockMessage(aiogram_types.Message, MagicMock):
@@ -62,6 +69,44 @@ def make_state(current=None, data=None):
     state.set_state = AsyncMock()
     state.clear = AsyncMock()
     return state
+
+
+@pytest.fixture
+def lead_db(real_db, monkeypatch):
+    for name in ("create_lead", "mark_lead_sent", "mark_lead_failed"):
+        monkeypatch.setattr(lead_handler, name, getattr(real_db, name))
+    return real_db
+
+
+@pytest.fixture
+def sheets_module():
+    path = os.path.join(PROJECT_ROOT, "services", "sheets.py")
+    spec = importlib.util.spec_from_file_location("services.sheets.testing", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def hanging_sheets(sheets_module, monkeypatch):
+    cancelled = asyncio.Event()
+
+    async def hang(*args):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    async def short_timeout(awaitable, timeout):
+        assert timeout == 10.0
+        return await asyncio.wait_for(awaitable, timeout=0.01)
+
+    async_api = SimpleNamespace(
+        to_thread=AsyncMock(side_effect=hang),
+        wait_for=AsyncMock(side_effect=short_timeout),
+    )
+    monkeypatch.setattr(sheets_module, "asyncio", async_api)
+    return sheets_module, async_api, cancelled
 
 
 class TestKeyboards:
@@ -209,6 +254,7 @@ class TestStartLeadForm:
             await lead_handler.start_lead_form(msg, state)
         state.set_state.assert_awaited_once_with(lead_handler.LeadForm.waiting_for_name)
         msg.answer.assert_awaited_once()
+        assert UUID(state.update_data.call_args.kwargs["lead_uuid"])
 
     @pytest.mark.asyncio
     async def test_start_via_callback(self):
@@ -382,14 +428,18 @@ class TestProcessRequest:
         state.clear.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_valid_request_on_failure_does_not_clear_state(self):
+    async def test_valid_request_on_failure_confirms_and_clears_state(self, lead_db):
         msg = make_message(text="I need a bot")
         state = make_state(data={"lang": "uk", "name": "Anna", "phone": "+380991234567"})
         with patch("handlers.lead_form.add_lead_to_sheet", return_value=False), \
              patch("handlers.lead_form.config") as mock_cfg:
             mock_cfg.ADMIN_ID = None
             await lead_handler.process_request(msg, state)
-        state.clear.assert_not_awaited()
+        state.clear.assert_awaited_once()
+        assert msg.answer.call_args.args[0] == t("lead_success", "uk")
+        saved = (await lead_db.get_pending_leads())[0]
+        assert saved.status == "failed"
+        assert saved.attempts == 1
 
     @pytest.mark.asyncio
     async def test_admin_notification_html_escaped(self):
@@ -422,6 +472,192 @@ class TestProcessRequest:
         assert "&lt;b&gt;John&lt;/b&gt;" in admin_text
         assert "&lt;script&gt;" in admin_text
         assert "&lt; 500$" in admin_text
+
+
+    async def test_persists_pending_lead_before_sending_and_marks_sent(self, lead_db, monkeypatch):
+        msg = make_message(text="A Telegram bot for my shop")
+        state = make_state(data={"lang": "uk", "name": "Anna", "phone": "+380991234567"})
+
+        async def send(name, phone, request, *, lead_uuid):
+            pending = await lead_db.get_pending_leads()
+            assert len(pending) == 1
+            assert pending[0].status == "pending"
+            assert pending[0].attempts == 0
+            assert pending[0].lead_uuid == lead_uuid
+            assert (name, phone, request) == (pending[0].name, pending[0].phone, pending[0].request_text)
+            return True
+
+        send_mock = AsyncMock(side_effect=send)
+        monkeypatch.setattr(lead_handler, "add_lead_to_sheet", send_mock)
+        monkeypatch.setattr(lead_handler.config, "ADMIN_ID", 999)
+        await lead_handler.process_request(msg, state)
+
+        async with lead_db.async_session() as session:
+            saved = (await session.scalars(select(Lead))).one()
+        assert saved.status == "sent"
+        assert saved.attempts == 1
+        assert saved.sent_at is not None
+        assert saved.last_error is None
+        assert await lead_db.get_pending_leads() == []
+        send_mock.assert_awaited_once()
+        msg.bot.send_message.assert_awaited_once()
+        assert "⚠️" not in msg.bot.send_message.call_args.kwargs["text"]
+        assert msg.answer.call_args.args[0] == t("lead_success", "uk")
+        state.clear.assert_awaited_once()
+
+    async def test_sheets_timeout_keeps_lead_and_notifies_admin(self, lead_db, hanging_sheets, monkeypatch):
+        sheets, async_api, cancelled = hanging_sheets
+        monkeypatch.setattr(lead_handler, "add_lead_to_sheet", sheets.add_lead_to_sheet)
+        monkeypatch.setattr(lead_handler.config, "ADMIN_ID", 999)
+        msg = make_message(text="A Telegram bot for my shop")
+        state = make_state(data={"lang": "uk", "name": "Anna", "phone": "+380991234567"})
+
+        await lead_handler.process_request(msg, state)
+
+        saved = (await lead_db.get_pending_leads())[0]
+        assert saved.status == "failed"
+        assert saved.attempts == 1
+        assert "TimeoutError" in saved.last_error
+        assert saved.sent_at is None
+        assert saved.name == "Anna"
+        assert saved.phone == "+380991234567"
+        assert saved.request_text == msg.text
+        assert UUID(saved.lead_uuid)
+        async_api.wait_for.assert_awaited_once()
+        assert cancelled.is_set()
+        msg.bot.send_message.assert_awaited_once()
+        admin_text = msg.bot.send_message.call_args.kwargs["text"]
+        assert "⚠️" in admin_text
+        assert "Google Sheets" in admin_text
+        assert saved.lead_uuid in admin_text
+        assert msg.answer.call_args.args[0] == t("lead_success", "uk")
+        state.clear.assert_awaited_once()
+
+    @pytest.mark.parametrize("error", [OSError("Offline"), ValueError("Invalid credentials"), RuntimeError("Unavailable")])
+    async def test_any_sheet_error_keeps_lead_and_confirms_acceptance(self, lead_db, monkeypatch, error):
+        monkeypatch.setattr(lead_handler, "add_lead_to_sheet", AsyncMock(side_effect=error))
+        monkeypatch.setattr(lead_handler.config, "ADMIN_ID", 999)
+        msg = make_message(text="A Telegram bot", lang_code="en")
+        state = make_state(data={"lang": "en", "name": "John", "phone": "+380991234567"})
+
+        await lead_handler.process_request(msg, state)
+
+        saved = (await lead_db.get_pending_leads())[0]
+        assert saved.status == "failed"
+        assert saved.last_error == f"{type(error).__name__}: {error}"
+        assert msg.answer.call_args.args[0] == t("lead_success", "en")
+        assert "⚠️" in msg.bot.send_message.call_args.kwargs["text"]
+        state.clear.assert_awaited_once()
+
+    @pytest.mark.parametrize("success", [True, False])
+    async def test_admin_notification_failure_does_not_block_confirmation(self, lead_db, monkeypatch, success):
+        monkeypatch.setattr(lead_handler, "add_lead_to_sheet", AsyncMock(return_value=success))
+        monkeypatch.setattr(lead_handler.config, "ADMIN_ID", 999)
+        msg = make_message(text="A Telegram bot")
+        msg.bot.send_message.side_effect = RuntimeError("Telegram unavailable")
+        state = make_state(data={"lang": "uk", "name": "Anna", "phone": "+380991234567"})
+
+        await lead_handler.process_request(msg, state)
+
+        async with lead_db.async_session() as session:
+            saved = (await session.scalars(select(Lead))).one()
+        assert saved.status == ("sent" if success else "failed")
+        assert msg.answer.call_args.args[0] == t("lead_success", "uk")
+        state.clear.assert_awaited_once()
+
+    async def test_fsm_is_cleared_if_confirmation_cannot_be_sent(self, lead_db, monkeypatch):
+        monkeypatch.setattr(lead_handler, "add_lead_to_sheet", AsyncMock(return_value=True))
+        monkeypatch.setattr(lead_handler.config, "ADMIN_ID", 999)
+        msg = make_message(text="A Telegram bot")
+        msg.answer.side_effect = [None, RuntimeError("Telegram unavailable")]
+        state = make_state(data={"lang": "uk", "name": "Anna", "phone": "+380991234567"})
+
+        with pytest.raises(RuntimeError, match="Telegram unavailable"):
+            await lead_handler.process_request(msg, state)
+
+        msg.bot.send_message.assert_awaited_once()
+        state.clear.assert_awaited_once()
+        async with lead_db.async_session() as session:
+            assert (await session.scalars(select(Lead))).one().status == "sent"
+
+    async def test_already_sent_uuid_is_not_sent_twice(self, lead_db, monkeypatch):
+        lead = await lead_db.create_lead(123, "Anna", "+380991234567", "A Telegram bot", lead_uuid="same-key")
+        await lead_db.mark_lead_sent(lead.id)
+        sheet_mock = AsyncMock(return_value=True)
+        monkeypatch.setattr(lead_handler, "add_lead_to_sheet", sheet_mock)
+        monkeypatch.setattr(lead_handler.config, "ADMIN_ID", None)
+        msg = make_message(text="A Telegram bot")
+        state = make_state(data={"lang": "uk", "name": "Anna", "phone": "+380991234567", "lead_uuid": "same-key"})
+
+        await lead_handler.process_request(msg, state)
+
+        sheet_mock.assert_not_awaited()
+        async with lead_db.async_session() as session:
+            assert await session.scalar(select(func.count()).select_from(Lead)) == 1
+            assert (await session.get(Lead, lead.id)).attempts == 1
+        state.clear.assert_awaited_once()
+
+    async def test_local_storage_failure_does_not_claim_acceptance(self, monkeypatch):
+        monkeypatch.setattr(lead_handler, "create_lead", AsyncMock(side_effect=SQLAlchemyError("Database unavailable")))
+        sheet_mock = AsyncMock(return_value=True)
+        monkeypatch.setattr(lead_handler, "add_lead_to_sheet", sheet_mock)
+        msg = make_message(text="A Telegram bot")
+        state = make_state(data={"lang": "uk", "name": "Anna", "phone": "+380991234567"})
+
+        await lead_handler.process_request(msg, state)
+
+        sheet_mock.assert_not_awaited()
+        msg.bot.send_message.assert_not_awaited()
+        assert msg.answer.call_args.args[0] == t("lead_error", "uk")
+        state.clear.assert_not_awaited()
+
+
+class TestSheets:
+    def test_client_has_network_timeout(self, sheets_module, monkeypatch):
+        client = MagicMock()
+        service_account = MagicMock(return_value=client)
+        monkeypatch.setattr(sheets_module.gspread, "service_account", service_account)
+        assert sheets_module.get_gc() is client
+        assert sheets_module.get_gc() is client
+        client.set_timeout.assert_called_once_with(10.0)
+        service_account.assert_called_once()
+
+    async def test_success_keeps_row_format_and_does_not_log_personal_data(self, sheets_module, monkeypatch, caplog):
+        client = MagicMock()
+        monkeypatch.setattr(sheets_module, "get_gc", lambda: client)
+        caplog.set_level(logging.INFO, logger=sheets_module.__name__)
+
+        assert await sheets_module.add_lead_to_sheet(
+            "Private Name", "+380991234567", "Private request", lead_uuid="lead-identifier"
+        ) is True
+
+        client.open.return_value.sheet1.append_row.assert_called_once_with(
+            ["Private Name", "+380991234567", "Private request"], value_input_option="RAW"
+        )
+        assert "lead-identifier" in caplog.text
+        assert "Private Name" not in caplog.text
+        assert "+380991234567" not in caplog.text
+        assert "Private request" not in caplog.text
+
+    async def test_errors_propagate_without_logging_personal_data(self, sheets_module, monkeypatch, caplog):
+        monkeypatch.setattr(sheets_module, "get_gc", MagicMock(side_effect=OSError("Private Name +380991234567")))
+        caplog.set_level(logging.INFO, logger=sheets_module.__name__)
+
+        with pytest.raises(OSError):
+            await sheets_module.add_lead_to_sheet("Private Name", "+380991234567", "Request", lead_uuid="lead-identifier")
+
+        assert "lead-identifier" in caplog.text
+        assert "OSError" in caplog.text
+        assert "Private Name" not in caplog.text
+        assert "+380991234567" not in caplog.text
+
+    async def test_hanging_sheet_call_times_out(self, hanging_sheets):
+        sheets, async_api, cancelled = hanging_sheets
+        with pytest.raises(TimeoutError):
+            await sheets.add_lead_to_sheet("Test", "1234567", "Request", lead_uuid="lead-identifier")
+        async_api.wait_for.assert_awaited_once()
+        async_api.to_thread.assert_awaited_once_with(sheets._append_lead, "Test", "1234567", "Request")
+        assert cancelled.is_set()
 
 
 class TestCancelHandler:

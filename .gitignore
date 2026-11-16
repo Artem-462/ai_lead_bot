@@ -4,6 +4,8 @@ credentials.json
 
 # Database (SQLite lives in data/)
 data/*.db
+data/*.db-wal
+data/*.db-shm
 !data/.gitkeep
 
 # Virtual environments
