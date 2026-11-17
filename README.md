@@ -6,13 +6,13 @@
 [![aiogram](https://img.shields.io/badge/aiogram-3.31-009EFF?style=flat-square&logo=telegram&logoColor=white)](https://aiogram.dev)
 [![Gemini](https://img.shields.io/badge/Gemini%20Flash-Cascade%20Fallback-4285F4?style=flat-square&logo=google&logoColor=white)](https://ai.google.dev)
 [![aiosqlite](https://img.shields.io/badge/aiosqlite-0.21.0-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://github.com/omnilib/aiosqlite)
-[![Tests](https://img.shields.io/badge/Tests-188%20passed-success?style=flat-square&logo=pytest&logoColor=white)](https://pytest.org)
+[![Tests](https://img.shields.io/badge/Tests-passing-success?style=flat-square&logo=pytest&logoColor=white)](https://pytest.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
 An asynchronous Telegram bot designed for client consultation, automated lead intake, and document-backed question answering. Built with Python 3.11, aiogram 3.31, Google Gemini Flash, a custom vector RAG pipeline, and SQLite.
 
-[Architecture](#architecture) · [Dual-Mode Engine](#dual-mode-knowledge-base-architecture) · [RAG Engine](#vector-rag-engine) · [Features](#features) · [Quick Start](#quick-start) · [Testing](#testing--verification) · [Docker](#docker-deployment) · [Configuration](#configuration)
+[Architecture](#architecture) · [Hybrid Knowledge Base](#hybrid-knowledge-base) · [RAG Engine](#vector-rag-engine) · [Features](#features) · [Quick Start](#quick-start) · [Testing](#testing--verification) · [Docker](#docker-deployment) · [Configuration](#configuration)
 
 </div>
 
@@ -40,63 +40,53 @@ flowchart TD
     Routers --> LeadH["lead_form.py: 3-step FSM qualification flow"]
     Routers --> AdminH["admin.py: admin panel, stats, docs, batch file intake"]
 
-    MainH --> RouteDecision["Route Decision: DB has documents?"]
-    RouteDecision -->|"No: Lite Mode"| FlatKB["knowledge_base.txt: mtime hot-reload"]
-    RouteDecision -->|"Yes: Enterprise RAG"| VectorRAG["Vector RAG: NumPy search and SQLite store"]
+    MainH --> FlatKB["knowledge_base.txt: always-loaded company context"]
+    MainH --> RouteDecision["DB has documents?"]
+    RouteDecision -->|"Yes: additional document facts"| VectorRAG["Vector RAG: compatible embeddings only"]
     FlatKB --> Gemini["Gemini Cascade: 3.8-flash, 2.5-flash, flash-latest"]
     VectorRAG --> Gemini
 
     LeadH --> GSheets["Google Sheets: gspread client"]
     AdminH --> BatchLock["asyncio.Lock: sequential batch ingestion queue"]
-    BatchLock --> DB["aiosqlite: async DB"]
+    BatchLock --> DB["SQLAlchemy 2.0: async DB"]
     MainH --> DB
     VectorRAG --> DB
     DB --> Storage[("SQLite DB: persistent chat_history.db")]
 ```
 
-### Dual-Mode Knowledge Base Architecture
+### Hybrid Knowledge Base
 
-The bot provides a 2-in-1 knowledge base architecture, adapting its retrieval and prompt construction strategy to the operational scale of the deployment:
+Every consultation includes the company description from `knowledge_base.txt`. Uploaded documents supplement this context instead of disabling it.
 
 ```mermaid
 flowchart TD
-    Query["Incoming User Query"] --> CheckDocs["Check SQLite Documents"]
-
-    CheckDocs -->|"Empty: Lite Mode"| CheckMTime["Check knowledge_base.txt mtime"]
-    CheckMTime --> ReloadDecision["Has mtime changed?"]
-    ReloadDecision -->|"Yes"| ReadDisk["Read knowledge_base.txt from disk"]
-    ReloadDecision -->|"No"| MemCache["Use cached in-memory text"]
-    ReadDisk --> SystemPromptLite["Build system prompt from full text"]
-    MemCache --> SystemPromptLite
-    SystemPromptLite --> GeminiLite["Gemini Cascade: 3.8-flash, 2.5-flash, flash-latest"]
-
-    CheckDocs -->|"Populated: Enterprise RAG"| EmbedQuery["Vectorize query with gemini-embedding-001"]
-    EmbedQuery --> CosineSearch["NumPy cosine similarity search"]
-    CosineSearch --> FilterScore["Filter chunks: similarity score 0.52+"]
-    FilterScore -->|"Found relevant chunks"| TopChunks["Select top-4 chunks with page citations"]
-    FilterScore -->|"No relevant chunks"| RefusalPrompt["Trigger refusal guard: NO_RAG_ANSWER"]
-    TopChunks --> GeminiRAG["Gemini Cascade: strict RAG prompt with citations"]
-    RefusalPrompt --> RefusalReply["Return standard refusal message"]
+    Query["Incoming User Query"] --> CompanyContext["Load knowledge_base.txt with mtime cache"]
+    CompanyContext --> CheckDocs["Check SQLite Documents"]
+    CheckDocs -->|"Present"| Search["Vector search: configured model and dimension"]
+    Search --> Prompt["Company context plus relevant document fragments"]
+    CheckDocs -->|"Absent"| Prompt
+    Prompt --> Model["Gemini generation cascade"]
+    Model -->|"Company facts or general advice"| General["Answer without document citation"]
+    Model -->|"Document facts"| Cited["Answer with exact document sources"]
+    Model -->|"Specific facts absent from both sources"| Refusal["Honest missing-information response"]
 ```
 
-#### 1. Lite Mode (Small Business)
-- **Target deployment:** Freelancers, solo developers, and small service businesses maintaining a compact list of services, prices, and terms in a single document.
-- **Data source:** Flat text file [`knowledge_base.txt`](knowledge_base.txt).
-- **Zero-downtime hot-reload:** The runtime checks the file modification timestamp (`os.path.getmtime`) on each incoming user question. If the file is modified on disk, the in-memory string cache updates on the fly without restarting the service or dropping active Telegram sessions.
-- **Default activation:** Engages automatically whenever the SQLite document tables contain zero records.
+#### Company Context and Document Facts
+- **Always available:** [`knowledge_base.txt`](knowledge_base.txt) provides general service descriptions and any prices or terms recorded there. Its mtime-based cache reloads changes without restarting the bot.
+- **Additional retrieval:** When documents exist, queries are embedded and searched with NumPy cosine similarity. Results use the absolute threshold (`score >= 0.52`) and relative window (`score >= max(0.52, top_score - 0.08)`), with at most four fragments.
+- **Fact priority:** Relevant document fragments take precedence over company context for exact prices, tariffs, terms, and regulations. General consultation remains available when no fragments match.
+- **Strict sources:** Replies based on documents receive an automatically formatted footer such as `📄 Джерело: price.pdf (стор. 2)`. Internal source identifiers are checked against the retrieved fragments; company-only answers do not cite unused documents.
+- **Missing information:** `NO_RAG_ANSWER` is used only when the requested specific facts are absent from both sources.
+- **Document removal:** `admin:clear_all_docs` deletes documents and their chunks, invalidates the vector cache, and leaves the company context available.
 
-#### 2. Enterprise RAG Mode (Large Companies)
-- **Target deployment:** Companies with structured catalogs, service-level agreements, technical specifications, and multi-page price lists across multiple corporate documents.
-- **Automatic activation:** Automatically triggers as soon as an administrator uploads one or more `.pdf` or `.docx` files.
-- **Vector search pipeline:** Incoming queries are vectorized using `gemini-embedding-001`, evaluated against in-memory chunk embeddings using NumPy cosine similarity, and filtered by absolute threshold (`score >= 0.52`) and relative relevance window (`score >= max(0.52, top_score - 0.08)`).
-- **Structure preservation and focused citations:** Preserves table rows (`[Table Row | ...]`), uses coordinate masking in PDF to prevent duplicate extraction, and deterministically formats exact page numbers and source filenames from the top-matching document in the reply footer (e.g. `📄 Джерело: price.pdf (стор. 2)`).
-- **Refusal guard:** If retrieved chunks fail to reach the threshold or lack the factual answer, the LLM emits `NO_RAG_ANSWER` and the bot delivers a polite factual refusal instead of hallucinating.
+#### Embedding Compatibility
+- `EMBEDDING_MODEL` defaults to `gemini-embedding-001`; `EMBEDDING_DIM` defaults to `3072`. Both indexing and query embeddings use these settings.
+- Transient request failures retry the same model after 1.5 and 3 seconds. There is no embedding-model fallback.
+- Every batch must return exactly one vector per input, with the configured dimension and finite values. Invalid responses abort indexing before any document replacement.
+- Documents store their actual model and dimension. Search skips incompatible chunks and logs that the affected documents need reindexing.
+- After changing either setting, upload the documents again. Reindex documents created by older versions that could switch embedding models: metadata alone cannot identify vectors previously generated in a different space.
 
-#### 3. Instant Rollback (`admin:clear_all_docs`)
-- Administrators can wipe the vector store in a single click using the `admin:clear_all_docs` button inside the inline admin panel.
-- Purging drops all records in `documents` and `document_chunks` (`ON DELETE CASCADE`), invalidates the chunk embedding cache, and immediately rolls the consultation pipeline back to Lite Mode (`knowledge_base.txt`) without server restarts.
-
-#### 4. Batch Document Ingestion & Concurrency Control
+#### Batch Document Ingestion & Concurrency Control
 - **Batch Drag-and-Drop:** Administrators can upload multiple `.pdf` and `.docx` files at once directly in the Telegram chat.
 - **Anti-Spam Bypass:** `AntiSpamMiddleware` exempts `ADMIN_ID` from the sliding-window rate limit, preventing batch uploads from triggering false-positive flood blocks.
 - **Sequential Ingestion Queue (`asyncio.Lock`):** File downloads, parsing, chunk generation, and embedding calls are serialized under an `asyncio.Lock`. This eliminates SQLite write lock errors (`sqlite3.OperationalError: database is locked`), prevents event-loop stalls, and keeps Gemini API embedding rate limits within bounds.
@@ -105,7 +95,7 @@ flowchart TD
 
 ## Vector RAG Engine
 
-Rather than relying on heavy third-party frameworks like LangChain or LlamaIndex, the RAG subsystem in `services/rag.py` is implemented directly using `pdfplumber`, `python-docx`, `numpy`, and `aiosqlite`.
+The RAG subsystem in `services/rag.py` uses `pdfplumber`, `python-docx`, and `numpy`, with SQLAlchemy 2.0 for SQLite storage.
 
 ```
 Uploaded PDF / DOCX
@@ -119,10 +109,10 @@ Extract Pages & Preserve Tables
 Chunking (800 chars, 150 char overlap)
         │
         ▼
-Vector Embeddings (gemini-embedding-001)
+Vector Embeddings (configured model and dimension, strict batch validation)
         │
         ▼
-aiosqlite Storage (documents + document_chunks tables)
+SQLAlchemy Storage (documents + document_chunks with embedding metadata)
         │
         ▼ (Query Time)
 Cosine Similarity Matrix Search (NumPy)
@@ -136,6 +126,10 @@ Standard parsers flatten tabular data into arbitrary strings, stripping column a
 ```
 This preserves column semantics and ensures high cosine similarity matches even on concise user queries.
 
+PDF tables continued on the next page inherit the previous page's last table header when column counts match and the continuation has no header. Headerless two-column tables in PDF and DOCX retain every data row as `Key: Value`. Explicit header labels, bold headers, and DOCX repeated-header metadata are recognized.
+
+Rows longer than `chunk_size` are split with column labels and row context retained. Every resulting chunk respects the size limit, including overlap and newline separators.
+
 ### PDF Coordinate Masking
 `pdfplumber` normally returns table text twice: once during `extract_text()` and once during `extract_tables()`. To prevent duplication, table bounding boxes (`table.bbox`) are detected first. The page layout is then filtered with `page.filter(...)` to remove table areas before general text extraction runs.
 
@@ -143,10 +137,10 @@ This preserves column semantics and ensures high cosine similarity matches even 
 Word documents do not store fixed page numbers. The parser scans the underlying OpenXML structure for `<w:br w:type="page"/>` and `<w:lastRenderedPageBreak/>` tags. If an uploaded document was authored in a non-Word editor without pagination hints, a deterministic character-count fallback splits content every 1800 characters.
 
 ### Refusal Guard and Page Citations
-To eliminate hallucinations:
-1. If no chunk reaches the similarity threshold of `0.52`, the bot answers directly with a polite refusal without wasting LLM tokens.
-2. The LLM prompt instructs the model to reply with `NO_RAG_ANSWER` if the retrieved text lacks the answer.
-3. Successful answers automatically append deterministic source references:
+The prompt separates general consultation from exact factual claims:
+1. Missing document matches do not prevent an answer from `knowledge_base.txt`.
+2. Requested prices, figures, or terms absent from both contexts produce `NO_RAG_ANSWER`.
+3. Document-based answers append source references from the selected retrieved fragments:
    ```text
    📄 Джерело: Prais_IT_Poslug.pdf (стор. 2)
    ```
@@ -155,7 +149,7 @@ To eliminate hallucinations:
 
 ## Features
 
-- **Dual-Mode Knowledge Base (2-in-1 Architecture):** Dynamically toggles between Lite Mode (flat `knowledge_base.txt` with mtime-based hot-reload without restarts) and Enterprise RAG Mode (vector search over indexed `.pdf`/`.docx` files). Flushing the vector index via `admin:clear_all_docs` reverts the bot to Lite Mode instantly.
+- **Hybrid Knowledge Base:** Always loads company context from `knowledge_base.txt`, supplements it with relevant document facts, and preserves exact citations without disabling general consultation.
 - **Batch Document Ingestion via Telegram:** Administrators can upload single or batch `.pdf` and `.docx` files simultaneously. An asynchronous ingestion queue (`asyncio.Lock`) serializes parsing, chunking, and embedding generation to avoid event-loop blocking and SQLite write conflicts. Re-uploading an existing filename replaces chunks automatically (`ON DELETE CASCADE`).
 - **Resilient Model Cascade:** The bot executes an automatic 3-tier fallback chain (`gemini-3.8-flash` -> `gemini-2.5-flash` -> `gemini-flash-latest`) with a 1.5-second retry on 503 (Overloaded) or 429 (Rate Limit) errors.
 - **Dialogue Memory:** Maintains the last 8 message exchanges per user session to support natural follow-up questions.
@@ -174,7 +168,7 @@ To eliminate hallucinations:
 | Telegram API | aiogram 3.31 | Asynchronous dispatcher, routers, FSM, and filters |
 | AI / LLM | google-genai SDK | Generation via Gemini Flash and embeddings via `gemini-embedding-001` |
 | Vector Engine | NumPy, pdfplumber, python-docx | Ingestion, coordinate filtering, and vectorized cosine similarity |
-| Database | aiosqlite 0.21 | Async local storage for dialog history, user preferences, and chunks |
+| Database | SQLAlchemy 2.0, Alembic, aiosqlite | Async SQLite storage, schema migrations, and embedding metadata |
 | Lead Export | gspread 6.1 | Service account authentication and real-time Google Sheets append |
 | Testing | pytest, pytest-asyncio | Full test coverage with mocked external dependencies |
 | Linting | ruff | Code style and strict PEP 8 compliance |
@@ -226,6 +220,8 @@ GEMINI_API_KEY=AIzaSyYourGeminiApiKeyHere
 ADMIN_ID=987654321
 GOOGLE_SHEET_NAME=Leads
 GEMINI_MODELS=gemini-3.8-flash,gemini-2.5-flash,gemini-flash-latest
+EMBEDDING_MODEL=gemini-embedding-001
+EMBEDDING_DIM=3072
 ```
 
 Place your Google Cloud Service Account JSON inside `credentials.json`. Share your target Google Sheet with the `client_email` specified in your service account credentials.
@@ -255,15 +251,14 @@ python -m ruff check .
 
 ### Test Breakdown
 
-| File | Tests | Validated Behavior |
-|---|---|---|
-| `tests/test_rag.py` | 24 | PDF table bounding boxes, DOCX XML page breaks, chunking, cosine similarity, `/docs` and `/del_doc` handlers, empty PDF and file size limit |
-| `tests/test_handlers.py` | 69 | FSM states, name/phone validation, admin authorization, cancel actions, HTML escaping, admin panel callbacks, clear-all-docs callback |
-| `tests/test_llm.py` | 28 | Model cascade fallback, 1.5s retry logic, prompt sanitization, context window limits, 404 fast fallback |
-| `tests/test_db.py` | 27 | Schema creation, conversation history logging, daily statistics calculation, document upsert, deletion, and clear_all_documents |
-| `tests/test_i18n.py` | 24 | Symmetric Ukrainian/English keys, language switching, template formatting |
-| `tests/test_main.py` | 16 | Command routing, router registration order, inline callbacks, rate limiter middleware with admin exemption |
-| **Total** | **188** | **100% pass rate** |
+| File | Validated Behavior |
+|---|---|
+| `tests/test_rag.py` | Batch count and dimension validation, same-model retry, embedding compatibility, PDF continuation headers, key-value tables, bounded table chunks, document handlers |
+| `tests/test_handlers.py` | FSM validation, authorization, HTML escaping, lead persistence, admin callbacks, batch uploads |
+| `tests/test_llm.py` | Hybrid company/document context, missing facts, exact citations, generation retries and fallback, dialogue history |
+| `tests/test_db.py` | ORM schema, migrations, conversation history, document transactions, chunk cache, lead persistence |
+| `tests/test_i18n.py` | Symmetric Ukrainian/English keys, language switching, template formatting |
+| `tests/test_main.py` | Command routing, inline callbacks, logging, rate limiting |
 
 ---
 
@@ -312,6 +307,8 @@ SQLite files and indexed embeddings are preserved in the persistent volume mappe
 | `ADMIN_ID` | integer | No | Telegram ID allowed to execute `/stats`, `/docs`, `/del_doc` |
 | `GOOGLE_SHEET_NAME` | string | No | Google Sheet worksheet title (default: `Leads`) |
 | `GEMINI_MODELS` | string | No | Comma-separated list of Gemini model names in order of priority |
+| `EMBEDDING_MODEL` | string | No | Single model for the vector index (default: `gemini-embedding-001`); changes require reindexing |
+| `EMBEDDING_DIM` | integer | No | Requested and validated vector dimension (default: `3072`); changes require reindexing |
 
 ---
 
@@ -323,7 +320,7 @@ ai_lead_bot/
 ├── config.py                   # Environment validation and logging setup
 ├── i18n.py                     # Localization strings and helper functions
 ├── keyboards.py                # InlineKeyboardMarkup builders
-├── knowledge_base.txt          # Default text knowledge base (Lite Mode hot-reload)
+├── knowledge_base.txt          # Always-loaded company context with hot-reload
 ├── requirements.txt            # Runtime dependencies
 ├── requirements-dev.txt        # Development and testing dependencies
 ├── pytest.ini                  # Pytest configuration
@@ -336,7 +333,7 @@ ai_lead_bot/
 │
 ├── services/
 │   ├── db.py                   # Async SQLite database layer (dialogs, chunks, clear_all)
-│   ├── llm.py                  # Dual-mode switch, Gemini cascade, retries, and markdown cleaning
+│   ├── llm.py                  # Hybrid context, citations, Gemini cascade, and retries
 │   ├── rag.py                  # Vector indexing, coordinate filtering, and cosine search
 │   └── sheets.py               # Google Sheets append integration
 │
@@ -346,7 +343,7 @@ ai_lead_bot/
 ├── data/                       # Local SQLite storage directory
 │   └── chat_history.db
 │
-└── tests/                      # Automated test suite (188 tests)
+└── tests/                      # Automated test suite
     ├── conftest.py
     ├── test_db.py
     ├── test_handlers.py

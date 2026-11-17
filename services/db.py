@@ -10,6 +10,7 @@ from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool, StaticPool
 
+import config
 from alembic import command
 from services.models import Document, DocumentChunk, History, Lead, User, utc_now
 
@@ -141,8 +142,12 @@ async def get_user_language(user_id: int) -> str | None:
 
 def _embedding_bytes(embedding: Any) -> bytes:
     if isinstance(embedding, (np.ndarray, list, tuple)):
-        return np.asarray(embedding, dtype=np.float32).tobytes()
-    return bytes(embedding)
+        vector = np.asarray(embedding, dtype=np.float32)
+    else:
+        vector = np.frombuffer(bytes(embedding), dtype=np.float32)
+    if vector.ndim != 1 or vector.size == 0 or not np.isfinite(vector).all():
+        raise ValueError("Embedding must be a non-empty, finite, one-dimensional vector")
+    return vector.tobytes()
 
 
 async def upsert_document(
@@ -150,10 +155,28 @@ async def upsert_document(
     file_type: str,
     chunks: list[dict[str, Any]],
     *,
-    embedding_model: str = "gemini-embedding-001",
-    embedding_dim: int = 3072,
+    embedding_model: str = config.EMBEDDING_MODEL,
+    embedding_dim: int | None = None,
 ) -> dict[str, Any]:
     filename = filename.strip()
+    embedding_model = embedding_model.strip()
+    if not embedding_model:
+        raise ValueError("Embedding model must be non-empty")
+    serialized_embeddings = [_embedding_bytes(chunk["embedding"]) for chunk in chunks]
+    item_size = np.dtype(np.float32).itemsize
+    if embedding_dim is None:
+        embedding_dim = (
+            len(serialized_embeddings[0]) // item_size if serialized_embeddings else config.EMBEDDING_DIM
+        )
+    if embedding_dim <= 0:
+        raise ValueError("Embedding dimension must be positive")
+    for index, embedding in enumerate(serialized_embeddings):
+        actual_dim = len(embedding) // item_size
+        if actual_dim != embedding_dim:
+            raise ValueError(
+                f"Embedding dimension mismatch for {filename}, chunk {index}: "
+                f"expected {embedding_dim}, got {actual_dim}"
+            )
     async with async_session.begin() as session:
         doc_id = await session.scalar(
             select(Document.id).where(Document.filename.collate("NOCASE") == filename)
@@ -176,9 +199,9 @@ async def upsert_document(
                     page_number=chunk["page_number"],
                     chunk_index=chunk["chunk_index"],
                     content=chunk["content"],
-                    embedding=_embedding_bytes(chunk["embedding"]),
+                    embedding=embedding,
                 )
-                for chunk in chunks
+                for chunk, embedding in zip(chunks, serialized_embeddings, strict=True)
             ]
         )
     invalidate_chunks_cache()
@@ -249,6 +272,8 @@ async def get_all_chunks_with_metadata() -> list[dict[str, Any]]:
             DocumentChunk.chunk_index,
             DocumentChunk.embedding,
             Document.filename,
+            Document.embedding_model,
+            Document.embedding_dim,
         )
         .join(Document, DocumentChunk.doc_id == Document.id)
         .order_by(DocumentChunk.doc_id, DocumentChunk.chunk_index)
@@ -262,6 +287,8 @@ async def get_all_chunks_with_metadata() -> list[dict[str, Any]]:
             "chunk_index": row.chunk_index,
             "embedding": np.frombuffer(row.embedding, dtype=np.float32),
             "filename": row.filename,
+            "embedding_model": row.embedding_model,
+            "embedding_dim": row.embedding_dim,
         }
         for row in rows
     ]

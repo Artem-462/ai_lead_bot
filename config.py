@@ -11,6 +11,11 @@ raw_admin_id = os.getenv("ADMIN_ID")
 ADMIN_ID = int(raw_admin_id) if raw_admin_id and raw_admin_id.isdigit() else None
 GOOGLE_SHEET_NAME = os.getenv("GOOGLE_SHEET_NAME", "Leads")
 
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001").strip()
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "3072"))
+if not EMBEDDING_MODEL or EMBEDDING_DIM <= 0:
+    raise ValueError("EMBEDDING_MODEL must be non-empty and EMBEDDING_DIM must be positive")
+
 DEFAULT_GEMINI_MODELS = [
     "gemini-3.8-flash",
     "gemini-2.5-flash",

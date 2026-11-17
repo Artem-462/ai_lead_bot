@@ -20,6 +20,8 @@ _fake_config.GOOGLE_SHEET_NAME = "Leads"
 _fake_config.GEMINI_MODEL = "gemini-3.8-flash"
 _fake_config.GEMINI_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-flash-latest"]
 _fake_config.GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
+_fake_config.EMBEDDING_MODEL = "gemini-embedding-001"
+_fake_config.EMBEDDING_DIM = 3072
 _fake_config.logger = _logging.getLogger("config")
 sys.modules["config"] = _fake_config
 
@@ -196,7 +198,7 @@ sys.modules["services.sheets"] = _sheets_mod
 _services_pkg.sheets = _sheets_mod  # type: ignore
 
 _llm_mod = _types.ModuleType("services.llm")
-_llm_mod.get_ai_answer = _mock.AsyncMock(return_value="AI response")  # type: ignore
+_llm_mod.get_ai_answer = _mock.AsyncMock(return_value="Test response")  # type: ignore
 _llm_mod.clear_history = _mock.MagicMock()  # type: ignore
 _llm_mod.client = _mock.MagicMock()  # type: ignore
 sys.modules["services.llm"] = _llm_mod

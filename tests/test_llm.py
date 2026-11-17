@@ -4,6 +4,7 @@ import sys
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
@@ -11,8 +12,6 @@ if PROJECT_ROOT not in sys.path:
 
 from google.genai.errors import APIError
 
-# Load the REAL services/llm.py directly from disk,
-# bypassing the stub that conftest put in sys.modules.
 _llm_path = os.path.join(PROJECT_ROOT, "services", "llm.py")
 _spec = importlib.util.spec_from_file_location("services.llm.real", _llm_path)
 llm = importlib.util.module_from_spec(_spec)
@@ -252,3 +251,191 @@ class TestGetAiAnswer:
             ans = await llm.get_ai_answer(123, "Hello", "uk")
             assert ans == "Normal KB reply"
             mock_has_docs.assert_awaited_once()
+
+
+class TestHybridKnowledgeBase:
+    @pytest.fixture(autouse=True)
+    def company_context(self):
+        llm._sessions.clear()
+        with (
+            patch.object(llm, "load_knowledge_base", return_value="Бот збирає заявки цілодобово. Базовий тариф: $100.") as load,
+            patch.object(llm, "has_documents", new_callable=AsyncMock, return_value=True),
+        ):
+            yield load
+        llm._sessions.clear()
+
+    @pytest.mark.asyncio
+    async def test_general_consultation_with_documents_and_no_relevant_chunks(self, company_context):
+        question = "Чим бот корисний для бізнесу?"
+        answer = "Бот збирає заявки цілодобово й допомагає не втрачати звернення клієнтів."
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=[]) as search,
+            patch.object(llm, "_call_model", new_callable=AsyncMock, return_value=answer) as model,
+        ):
+            result = await llm.get_ai_answer(123, question, "uk")
+        assert result == answer
+        assert "📄" not in result
+        company_context.assert_called_once_with()
+        search.assert_awaited_once_with(question)
+        model.assert_awaited_once()
+        prompt = model.call_args.args[2]
+        assert "Бот збирає заявки цілодобово" in prompt
+        assert "knowledge_base.txt" in prompt
+        assert "не є причиною" in prompt
+
+    @pytest.mark.asyncio
+    async def test_general_answer_does_not_cite_unused_document(self, company_context):
+        chunks = [{"content": "Підтримка коштує $50.", "filename": "price.pdf", "page_number": 2}]
+        answer = "Бот приймає заявки цілодобово."
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=chunks),
+            patch.object(llm, "_call_model", new_callable=AsyncMock, return_value=f"BASE_ANSWER\n{answer}") as model,
+        ):
+            result = await llm.get_ai_answer(123, "Чим бот корисний для бізнесу?", "uk")
+        assert result == answer
+        assert "BASE_ANSWER" not in result
+        assert "📄" not in result
+        company_context.assert_called_once_with()
+        assert "Підтримка коштує $50." in model.call_args.args[2]
+        assert "Бот збирає заявки цілодобово" in model.call_args.args[2]
+
+    @pytest.mark.parametrize("lang,question,answer,footer", [
+        ("uk", "Яка ціна бота?", "Ціна бота — $300.", "📄 Джерело: price.pdf (стор. 2)"),
+        ("en", "What is the bot price?", "The bot price is $300.", "📄 Source: price.pdf (p. 2)"),
+    ])
+    @pytest.mark.asyncio
+    async def test_document_facts_take_priority_and_have_exact_source(self, company_context, lang, question, answer, footer):
+        chunks = [{"content": "Ціна бота: $300.", "filename": "price.pdf", "page_number": 2}]
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=chunks),
+            patch.object(llm, "_call_model", new_callable=AsyncMock, return_value=f"DOCUMENT_ANSWER: 1\n{answer}") as model,
+        ):
+            result = await llm.get_ai_answer(123, question, lang)
+        assert result == f"{answer}\n\n{footer}"
+        company_context.assert_called_once_with()
+        prompt = model.call_args.args[2]
+        assert "Базовий тариф: $100." in prompt
+        assert "Ціна бота: $300." in prompt
+        assert "Фрагменти документів мають пріоритет" in prompt
+        assert "DOCUMENT_ANSWER" not in result
+
+    @pytest.mark.asyncio
+    async def test_only_used_retrieved_fragment_is_cited(self):
+        chunks = [
+            {"content": "Графік роботи", "filename": "schedule.pdf", "page_number": 1, "score": 0.95},
+            {"content": "Ціна: $300", "filename": "price.pdf", "page_number": 4, "score": 0.90},
+        ]
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=chunks),
+            patch.object(llm, "_call_model", new_callable=AsyncMock, return_value="DOCUMENT_ANSWER: 2\nЦіна — $300."),
+        ):
+            result = await llm.get_ai_answer(123, "Яка ціна?", "uk")
+        assert result == "Ціна — $300.\n\n📄 Джерело: price.pdf (стор. 4)"
+        assert "schedule.pdf" not in result
+
+    @pytest.mark.asyncio
+    async def test_sources_from_all_used_documents_are_preserved(self):
+        chunks = [
+            {"content": "Ціна: $300", "filename": "price.pdf", "page_number": 2, "score": 0.96},
+            {"content": "Підтримка: $50/міс.", "filename": "support.docx", "page_number": 3, "score": 0.89},
+        ]
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=chunks),
+            patch.object(llm, "_call_model", new_callable=AsyncMock,
+                         return_value="DOCUMENT_ANSWER: 1, 2\nБот — $300, підтримка — $50/міс."),
+        ):
+            result = await llm.get_ai_answer(123, "Яка вартість бота та підтримки?", "uk")
+        assert "📄 Джерело: price.pdf (стор. 2), support.docx (стор. 3)" in result
+
+    @pytest.mark.asyncio
+    async def test_price_from_company_context_is_available_without_document_match(self):
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=[]),
+            patch.object(llm, "_call_model", new_callable=AsyncMock, return_value="Базовий тариф — $100.") as model,
+        ):
+            result = await llm.get_ai_answer(123, "Який базовий тариф?", "uk")
+        assert result == "Базовий тариф — $100."
+        assert "Базовий тариф: $100." in model.call_args.args[2]
+        assert "📄" not in result
+
+    @pytest.mark.parametrize("documents_available", [True, False])
+    @pytest.mark.parametrize("lang", ["uk", "en"])
+    @pytest.mark.asyncio
+    async def test_unknown_specific_facts_return_honest_refusal(self, documents_available, lang):
+        with (
+            patch.object(llm, "has_documents", new_callable=AsyncMock, return_value=documents_available),
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=[]) as search,
+            patch.object(llm, "_call_model", new_callable=AsyncMock, return_value="NO_RAG_ANSWER") as model,
+        ):
+            result = await llm.get_ai_answer(123, "What is the enterprise SLA penalty?", lang)
+        assert result == t("rag_no_answer", lang)
+        assert "NO_RAG_ANSWER" in model.call_args.args[2]
+        assert "ані в документах, ані в knowledge_base.txt" in model.call_args.args[2]
+        assert not llm._get_history(123)
+        assert search.await_count == int(documents_available)
+
+    @pytest.mark.asyncio
+    async def test_unknown_fact_is_not_invented_from_unrelated_documents(self):
+        chunks = [{"content": "Ціна бота: $300.", "filename": "price.pdf", "page_number": 2}]
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=chunks),
+            patch.object(llm, "_call_model", new_callable=AsyncMock, return_value="NO_RAG_ANSWER"),
+        ):
+            result = await llm.get_ai_answer(123, "Який штраф передбачений корпоративним SLA?", "uk")
+        assert result == t("rag_no_answer", "uk")
+        assert "📄" not in result
+
+    @pytest.mark.asyncio
+    async def test_search_failure_does_not_disable_general_consultation(self, caplog):
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, side_effect=RuntimeError("Embedding failed")),
+            patch.object(llm, "_call_model", new_callable=AsyncMock, return_value="Бот збирає заявки цілодобово.") as model,
+        ):
+            result = await llm.get_ai_answer(123, "Чим корисний бот?", "uk")
+        assert result == "Бот збирає заявки цілодобово."
+        assert "Бот збирає заявки цілодобово" in model.call_args.args[2]
+        assert "Document search failed" in caplog.text
+
+    @pytest.mark.parametrize("error", [SQLAlchemyError("Database unavailable"), OSError("Database unavailable")])
+    @pytest.mark.asyncio
+    async def test_database_failure_keeps_company_context(self, error):
+        with (
+            patch.object(llm, "has_documents", new_callable=AsyncMock, side_effect=error),
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock) as search,
+            patch.object(llm, "_call_model", new_callable=AsyncMock, return_value="Бот збирає заявки цілодобово."),
+        ):
+            result = await llm.get_ai_answer(123, "Чим корисний бот?", "uk")
+        assert result == "Бот збирає заявки цілодобово."
+        search.assert_not_awaited()
+
+    @pytest.mark.parametrize("identifiers", ["0", "2", "1, 99", "price.pdf", ""])
+    @pytest.mark.asyncio
+    async def test_invalid_document_citations_are_rejected(self, identifiers):
+        chunks = [{"content": "Ціна: $300", "filename": "price.pdf", "page_number": 2}]
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=chunks),
+            patch.object(llm, "_call_model", new_callable=AsyncMock,
+                         return_value=f"DOCUMENT_ANSWER: {identifiers}\nЦіна — $300."),
+        ):
+            result = await llm.get_ai_answer(123, "Яка ціна?", "uk")
+        assert result == t("llm_error", "uk")
+        assert "📄" not in result
+        assert not llm._get_history(123)
+
+    @pytest.mark.asyncio
+    async def test_source_marker_without_answer_returns_empty_response_message(self):
+        chunks = [{"content": "Ціна: $300", "filename": "price.pdf", "page_number": 2}]
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=chunks),
+            patch.object(llm, "_call_model", new_callable=AsyncMock, return_value="BASE_ANSWER\n"),
+        ):
+            result = await llm.get_ai_answer(123, "Яка ціна?", "uk")
+        assert result == t("llm_empty", "uk")
+
+    def test_sources_deduplicate_and_sort_page_numbers(self):
+        chunks = [
+            {"filename": "price.pdf", "page_number": 4},
+            {"filename": "price.pdf", "page_number": 2},
+            {"filename": "price.pdf", "page_number": 4},
+        ]
+        assert llm.format_sources(chunks, "uk") == "price.pdf (стор. 2, 4)"
