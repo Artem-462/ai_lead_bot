@@ -72,6 +72,7 @@ TEXTS: dict[Language, dict[str, str]] = {
         "doc_deleted": "🗑️ Документ <b>{filename}</b> успішно видалено з бази знань.",
         "doc_not_found": "❌ Документ <b>{filename}</b> не знайдено в базі знань.",
         "doc_empty": "⚠️ У документі <b>{filename}</b> не знайдено текстового шару. Можливо, файл порожній або містить лише зображення.",
+        "doc_index_error": "❌ Не вдалося обробити документ <b>{filename}</b>. Файл може бути пошкодженим або сервіс тимчасово недоступний.",
         "doc_too_large": "⚠️ Файл занадто великий (максимум 20 МБ).",
         "ibtn_admin": "⚙️ Адмін-панель",
         "admin_panel_title": "⚙️ <b>Панель адміністратора</b>\n\nОберіть дію:",
@@ -79,6 +80,8 @@ TEXTS: dict[Language, dict[str, str]] = {
         "admin_btn_docs": "📂 Документи в базі",
         "admin_btn_upload": "📥 Додати документ",
         "admin_btn_clear_all": "🗑 Очистити всю базу RAG",
+        "admin_btn_confirm_clear_all": "✅ Так, видалити все",
+        "admin_btn_cancel_clear_all": "❌ Скасувати",
         "admin_btn_back": "⬅️ Назад",
         "admin_btn_back_main": "⬅️ Головне меню",
         "admin_upload_hint": (
@@ -86,6 +89,11 @@ TEXTS: dict[Language, dict[str, str]] = {
             "Надішліть один або одразу кілька файлів (пачкою) у форматах <b>.pdf</b> або <b>.docx</b> сюди в чат. "
             "Бот автоматично та послідовно проіндексує їх і оновить базу знань."
         ),
+        "admin_clear_all_confirm": (
+            "⚠️ <b>Ви впевнені, що хочете очистити всю базу RAG?</b>\n\n"
+            "Усі завантажені документи та їх фрагменти будуть видалені безповоротно."
+        ),
+        "admin_clear_all_cancelled": "Очищення бази скасовано.",
         "doc_all_cleared": "🗑 Усі документи ({count}) видалено! Бот перейшов у базовий режим.",
         "admin_del_btn": "🗑 {filename}",
     },
@@ -156,6 +164,7 @@ TEXTS: dict[Language, dict[str, str]] = {
         "doc_deleted": "🗑️ Document <b>{filename}</b> successfully deleted from knowledge base.",
         "doc_not_found": "❌ Document <b>{filename}</b> not found in knowledge base.",
         "doc_empty": "⚠️ No text layer found in document <b>{filename}</b>. The file may be empty or contain only images.",
+        "doc_index_error": "❌ Failed to process document <b>{filename}</b>. The file may be corrupted or the service is temporarily unavailable.",
         "doc_too_large": "⚠️ File is too large (maximum 20 MB).",
         "ibtn_admin": "⚙️ Admin Panel",
         "admin_panel_title": "⚙️ <b>Admin Panel</b>\n\nSelect an action:",
@@ -163,6 +172,8 @@ TEXTS: dict[Language, dict[str, str]] = {
         "admin_btn_docs": "📂 Documents in KB",
         "admin_btn_upload": "📥 Add document",
         "admin_btn_clear_all": "🗑 Clear entire RAG database",
+        "admin_btn_confirm_clear_all": "✅ Yes, delete all",
+        "admin_btn_cancel_clear_all": "❌ Cancel",
         "admin_btn_back": "⬅️ Back",
         "admin_btn_back_main": "⬅️ Main menu",
         "admin_upload_hint": (
@@ -170,6 +181,11 @@ TEXTS: dict[Language, dict[str, str]] = {
             "Send one or multiple files in batch (.pdf or .docx) here in chat. "
             "The bot will automatically and sequentially index them and update the knowledge base."
         ),
+        "admin_clear_all_confirm": (
+            "⚠️ <b>Are you sure you want to clear the entire RAG database?</b>\n\n"
+            "All uploaded documents and their chunks will be permanently deleted."
+        ),
+        "admin_clear_all_cancelled": "Database clearing cancelled.",
         "doc_all_cleared": "🗑 All documents ({count}) deleted! Bot switched to Lite mode.",
         "admin_del_btn": "🗑 {filename}",
     },

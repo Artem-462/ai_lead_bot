@@ -13,7 +13,7 @@ import main
 from handlers import admin, lead_form
 from i18n import LANG_SELECT_MSG, t
 from middlewares.antispam import AntiSpamMiddleware
-from tests.test_handlers import make_callback, make_message
+from tests.test_handlers import make_callback, make_message, make_state
 
 
 class TestMainHandlers:
@@ -189,3 +189,93 @@ class TestMainHandlers:
 
         assert handler.await_count == 1
         msg.answer.assert_awaited_once_with(t("antispam_warn", "uk"))
+
+    @pytest.mark.asyncio
+    async def test_cmd_start_escapes_html_first_name(self):
+        msg = make_message(text="/start", user_id=123)
+        msg.from_user.first_name = "<b>Alice</b> & <script>"
+        with patch("main.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            await main.cmd_start(msg)
+        welcome_text = msg.answer.call_args_list[1].args[0]
+        assert "&lt;b&gt;Alice&lt;/b&gt; &amp; &lt;script&gt;" in welcome_text
+        assert "<script>" not in welcome_text
+
+    @pytest.mark.asyncio
+    async def test_handle_language_choice_escapes_html_first_name(self):
+        cb = make_callback(data="lang:en", user_id=456)
+        cb.from_user.first_name = "<Bob> & Co"
+        with patch("main.set_user_language", new_callable=AsyncMock):
+            await main.handle_language_choice(cb)
+        welcome_text = cb.message.answer.call_args[0][0]
+        assert "&lt;Bob&gt; &amp; Co" in welcome_text
+        assert "<Bob>" not in welcome_text
+
+    @pytest.mark.asyncio
+    async def test_cmd_start_clears_active_fsm_state(self):
+        msg = make_message(text="/start", user_id=123)
+        state = make_state(current="LeadForm:waiting_for_name")
+        with patch("main.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            await main.cmd_start(msg, state)
+        state.clear.assert_awaited_once()
+        assert msg.answer.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_cmd_help_clears_active_fsm_state(self):
+        msg = make_message(text="/help", user_id=123)
+        state = make_state(current="LeadForm:waiting_for_phone")
+        with patch("main.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            await main.cmd_help(msg, state)
+        state.clear.assert_awaited_once()
+        assert msg.answer.call_args[0][0] == t("help", "uk")
+
+    @pytest.mark.asyncio
+    async def test_cmd_language_clears_active_fsm_state(self):
+        msg = make_message(text="/language", user_id=123)
+        state = make_state(current="LeadForm:waiting_for_request")
+        await main.cmd_language(msg, state)
+        state.clear.assert_awaited_once()
+        assert msg.answer.call_args_list[1].args[0] == LANG_SELECT_MSG
+
+    @pytest.mark.asyncio
+    async def test_handle_user_message_catches_unexpected_ai_exception(self):
+        msg = make_message(text="Question", user_id=123)
+        wait_msg = MagicMock()
+        wait_msg.edit_text = AsyncMock()
+        wait_msg.delete = AsyncMock()
+        msg.answer = AsyncMock(return_value=wait_msg)
+
+        with patch("main.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("main.get_ai_answer", new_callable=AsyncMock, side_effect=Exception("Embedding API down")):
+            await main.handle_user_message(msg)
+
+        wait_msg.edit_text.assert_awaited_once_with(t("server_error", "uk"))
+
+    @pytest.mark.asyncio
+    async def test_handle_user_message_deletes_wait_msg_if_error_edit_fails(self):
+        msg = make_message(text="Question", user_id=123)
+        wait_msg = MagicMock()
+        wait_msg.edit_text = AsyncMock(side_effect=RuntimeError("cannot edit"))
+        wait_msg.delete = AsyncMock()
+        msg.answer = AsyncMock(side_effect=[wait_msg, None])
+
+        with patch("main.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("main.get_ai_answer", new_callable=AsyncMock, side_effect=Exception("LLM failure")):
+            await main.handle_user_message(msg)
+
+        wait_msg.delete.assert_awaited_once()
+        assert msg.answer.await_count == 2
+        assert msg.answer.call_args_list[1].args[0] == t("server_error", "uk")
+
+    @pytest.mark.asyncio
+    async def test_global_error_handler_registered_and_logs_traceback(self):
+        registered = [func for func, _, _ in main.dp.errors.handlers]
+        assert main.global_error_handler in registered
+
+        err = RuntimeError("unexpected boom")
+        event = main.types.ErrorEvent(update=MagicMock(update_id=42), exception=err)
+        with patch("main.config.logger.error") as mock_error:
+            handled = await main.global_error_handler(event)
+
+        assert handled is True
+        mock_error.assert_called_once()
+        assert mock_error.call_args.kwargs["exc_info"] is err

@@ -5,14 +5,14 @@
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![aiogram](https://img.shields.io/badge/aiogram-3.31-009EFF?style=flat-square&logo=telegram&logoColor=white)](https://aiogram.dev)
 [![Gemini](https://img.shields.io/badge/Gemini%20Flash-Cascade%20Fallback-4285F4?style=flat-square&logo=google&logoColor=white)](https://ai.google.dev)
-[![aiosqlite](https://img.shields.io/badge/aiosqlite-0.21.0-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://github.com/omnilib/aiosqlite)
-[![Tests](https://img.shields.io/badge/Tests-passing-success?style=flat-square&logo=pytest&logoColor=white)](https://pytest.org)
+[![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy%202.0-Async%20%2B%20Alembic-D71F00?style=flat-square&logo=sqlalchemy&logoColor=white)](https://www.sqlalchemy.org)
+[![Tests](https://img.shields.io/badge/Tests-368%20passed-success?style=flat-square&logo=pytest&logoColor=white)](https://pytest.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
-An asynchronous Telegram bot designed for client consultation, automated lead intake, and document-backed question answering. Built with Python 3.11, aiogram 3.31, Google Gemini Flash, a custom vector RAG pipeline, and SQLite.
+An asynchronous Telegram bot designed for client consultation, automated lead intake, and document-backed question answering. Built with Python 3.11+, aiogram 3.31, Google Gemini Flash, a hybrid vector RAG pipeline, SQLAlchemy 2.0 Async + Alembic, and a transactional Lead Outbox.
 
-[Architecture](#architecture) · [Hybrid Knowledge Base](#hybrid-knowledge-base) · [RAG Engine](#vector-rag-engine) · [Features](#features) · [Quick Start](#quick-start) · [Testing](#testing--verification) · [Docker](#docker-deployment) · [Configuration](#configuration)
+[Architecture](#architecture) · [Database & Lead Outbox](#database--transactional-lead-outbox) · [Hybrid Knowledge Base](#hybrid-knowledge-base) · [RAG Engine](#vector-rag-engine) · [Features](#features) · [Quick Start](#quick-start) · [Testing](#testing--verification) · [Docker](#docker-deployment) · [Configuration](#configuration)
 
 </div>
 
@@ -20,25 +20,25 @@ An asynchronous Telegram bot designed for client consultation, automated lead in
 
 ## Overview
 
-This project provides an automated sales and support assistant inside Telegram. Unlike simple prompt-wrapper bots, it implements a full Retrieval-Augmented Generation (RAG) system with vectorized document search, table preservation, exact page citations, and fallback cascades across Gemini models.
+This project provides an automated sales and support assistant inside Telegram. Unlike simple prompt-wrapper bots, it implements a hybrid Retrieval-Augmented Generation (RAG) system combining an always-loaded company context (`knowledge_base.txt`) with vectorized PDF/DOCX search, cross-page table preservation, exact page citations, and fallback cascades across Gemini models.
 
-When a client asks about pricing, services, or technical details, the bot references indexed corporate documents (PDF or DOCX). When a user decides to order a service, an interactive finite state machine (FSM) collects contact details, validates inputs, exports the record to Google Sheets, and alerts the administrator.
+When a client asks about pricing, services, or technical details, the bot references indexed corporate documents (PDF or DOCX). When a user decides to order a service, an interactive finite state machine (FSM) collects contact details, validates inputs, persists the lead locally via a transactional outbox before exporting to Google Sheets, and alerts the administrator.
 
 ---
 
 ## Architecture
 
-The bot is designed to be fully non-blocking. Database queries, embeddings, model calls, and external Google Sheets writes run asynchronously or inside dedicated thread pools to keep the event loop responsive.
+The bot is designed to be fully non-blocking. Database queries, embeddings, model calls, and external Google Sheets writes run asynchronously or inside dedicated thread pools to keep the event loop responsive. Unhandled update exceptions are captured by a global `@dp.errors()` boundary.
 
 ```mermaid
 flowchart TD
-    Client["Telegram Client"] --> Dispatcher["aiogram Dispatcher"]
+    Client["Telegram Client"] --> Dispatcher["aiogram Dispatcher + @dp.errors()"]
     Dispatcher --> AntiSpam["AntiSpam Middleware: 2s rate limit and Admin bypass"]
     AntiSpam --> Routers["Routers and Handlers: 100% InlineKeyboardMarkup"]
 
-    Routers --> MainH["main.py: start, language, navigation, chat"]
-    Routers --> LeadH["lead_form.py: 3-step FSM qualification flow"]
-    Routers --> AdminH["admin.py: admin panel, stats, docs, batch file intake"]
+    Routers --> MainH["main.py: start, language, help, navigation, chat"]
+    Routers --> LeadH["lead_form.py: 3-step FSM with command escape"]
+    Routers --> AdminH["admin.py: admin panel, stats, docs, 2-step clear, batch intake"]
 
     MainH --> FlatKB["knowledge_base.txt: always-loaded company context"]
     MainH --> RouteDecision["DB has documents?"]
@@ -46,13 +46,22 @@ flowchart TD
     FlatKB --> Gemini["Gemini Cascade: 3.8-flash, 2.5-flash, flash-latest"]
     VectorRAG --> Gemini
 
-    LeadH --> GSheets["Google Sheets: gspread client"]
+    LeadH -->|"1. Persist pending lead (outbox)"| DB["SQLAlchemy 2.0 Async + Alembic"]
+    LeadH -->|"2. Sync with 10s timeout"| GSheets["Google Sheets: gspread client"]
     AdminH --> BatchLock["asyncio.Lock: sequential batch ingestion queue"]
-    BatchLock --> DB["SQLAlchemy 2.0: async DB"]
+    BatchLock --> DB
     MainH --> DB
     VectorRAG --> DB
     DB --> Storage[("SQLite DB: persistent chat_history.db")]
 ```
+
+### Database & Transactional Lead Outbox
+
+Persistence is managed with **SQLAlchemy 2.0 Async** (`aiosqlite`) and **Alembic** migrations using Code-First ORM models defined in [`services/models.py`](services/models.py) (`User`, `History`, `Document`, `DocumentChunk`, `Lead`).
+
+- **Automatic migrations:** `init_db()` runs Alembic upgrades (`alembic/versions/0001_code_first.py`) on startup and configures every SQLite connection with `PRAGMA journal_mode=WAL` and `PRAGMA foreign_keys=ON`.
+- **Lead Outbox reliability:** Starting the lead form generates an idempotent `lead_uuid`. On submission, the lead is committed locally to the `leads` table (`status='pending'`) before calling Google Sheets.
+- **Fault isolation:** Google Sheets exports run in a thread pool under a 10-second timeout. On success, the lead transitions to `sent` (`sent_at` recorded); on timeout or API error, it is marked `failed` with `attempts` and `last_error`, the client still gets confirmation, and the admin alert flags that the lead is safely stored locally for retry (`get_pending_leads()`).
 
 ### Hybrid Knowledge Base
 
@@ -77,7 +86,7 @@ flowchart TD
 - **Fact priority:** Relevant document fragments take precedence over company context for exact prices, tariffs, terms, and regulations. General consultation remains available when no fragments match.
 - **Strict sources:** Replies based on documents receive an automatically formatted footer such as `📄 Джерело: price.pdf (стор. 2)`. Internal source identifiers are checked against the retrieved fragments; company-only answers do not cite unused documents.
 - **Missing information:** `NO_RAG_ANSWER` is used only when the requested specific facts are absent from both sources.
-- **Document removal:** `admin:clear_all_docs` deletes documents and their chunks, invalidates the vector cache, and leaves the company context available.
+- **Document removal:** `admin:clear_all_docs` displays an inline two-step confirmation (`admin:confirm_clear_all` / `admin:cancel_clear_all`); only confirmed purges delete documents and chunks, invalidate the vector cache, and leave the company context available.
 
 #### Embedding Compatibility
 - `EMBEDDING_MODEL` defaults to `gemini-embedding-001`; `EMBEDDING_DIM` defaults to `3072`. Both indexing and query embeddings use these settings.
@@ -153,10 +162,11 @@ The prompt separates general consultation from exact factual claims:
 - **Batch Document Ingestion via Telegram:** Administrators can upload single or batch `.pdf` and `.docx` files simultaneously. An asynchronous ingestion queue (`asyncio.Lock`) serializes parsing, chunking, and embedding generation to avoid event-loop blocking and SQLite write conflicts. Re-uploading an existing filename replaces chunks automatically (`ON DELETE CASCADE`).
 - **Resilient Model Cascade:** The bot executes an automatic 3-tier fallback chain (`gemini-3.8-flash` -> `gemini-2.5-flash` -> `gemini-flash-latest`) with a 1.5-second retry on 503 (Overloaded) or 429 (Rate Limit) errors.
 - **Dialogue Memory:** Maintains the last 8 message exchanges per user session to support natural follow-up questions.
-- **Lead Intake Pipeline:** A 3-step conversation state machine validates client name, phone number (via regex `^\+?[0-9\s\-\(\)]{7,20}$`), and project details before syncing to Google Sheets and pinging the admin.
+- **Lead Intake Pipeline & Outbox:** A 3-step conversation state machine validates client name, phone number (via regex `^\+?[0-9\s\-\(\)]{7,20}$`), and project details, persists leads locally via SQLAlchemy outbox before syncing to Google Sheets, and notifies the admin. Commands `/start`, `/cancel`, `/help`, and `/language` cleanly exit the FSM from any step.
 - **Bilingual Interface:** Supports Ukrainian (`uk`) and English (`en`). User preferences are stored in SQLite. English prompts are tuned for international readability (A2-B1 vocabulary).
 - **Anti-Spam Throttling with Admin Exemption:** Sliding-window rate limiter prevents user message flooding (2-second interval) with periodic in-memory cleanup, while bypassing restrictions for `ADMIN_ID` during administration and batch file uploads.
-- **Admin Control Panel & Statistics:** Authorized admins (`ADMIN_ID`) get an inline control panel (`⚙️ Адмін-панель` / `/admin`) for one-tap statistics review, knowledge base inspection, document removal, batch intake, and one-click database purge (`admin:clear_all_docs`), alongside `/stats`, `/docs`, and `/del_doc` commands.
+- **Admin Control Panel & Statistics:** Authorized admins (`ADMIN_ID`) get an inline control panel (`⚙️ Адмін-панель` / `/admin`) for one-tap statistics review, knowledge base inspection, document removal, batch intake, and two-step confirmed database purge (`admin:clear_all_docs` -> `admin:confirm_clear_all` / `admin:cancel_clear_all`), alongside `/stats`, `/docs`, and `/del_doc` commands.
+- **Error Boundaries & Safe HTML Rendering:** Corrupted PDF/DOCX uploads (`BadZipFile`, broken PDFs) and embedding/LLM API failures always replace or remove temporary status messages ("Indexing…" / "Thinking…"), uncaught update errors are logged with tracebacks by `@dp.errors()`, and all user names, lead fields, and filenames are escaped with `html.escape()`.
 
 ---
 
@@ -164,15 +174,15 @@ The prompt separates general consultation from exact factual claims:
 
 | Component | Library / Tool | Role in System |
 |---|---|---|
-| Language | Python 3.11+ | Type hints (PEP 484, PEP 604), structural pattern matching |
-| Telegram API | aiogram 3.31 | Asynchronous dispatcher, routers, FSM, and filters |
+| Language | Python 3.11+ | Type hints (PEP 484, PEP 604), async/await |
+| Telegram API | aiogram 3.31 | Asynchronous dispatcher, routers, FSM, filters, and global error boundary |
 | AI / LLM | google-genai SDK | Generation via Gemini Flash and embeddings via `gemini-embedding-001` |
-| Vector Engine | NumPy, pdfplumber, python-docx | Ingestion, coordinate filtering, and vectorized cosine similarity |
-| Database | SQLAlchemy 2.0, Alembic, aiosqlite | Async SQLite storage, schema migrations, and embedding metadata |
-| Lead Export | gspread 6.1 | Service account authentication and real-time Google Sheets append |
+| Vector Engine | NumPy, pdfplumber, python-docx | Ingestion, coordinate filtering, cross-page tables, and cosine similarity |
+| Database | SQLAlchemy 2.0, Alembic, aiosqlite | Async SQLite ORM, Code-First migrations, RAG storage, and Lead Outbox |
+| Lead Export | gspread 6.2 | Service account authentication and timeout-guarded Google Sheets append |
 | Testing | pytest, pytest-asyncio | Full test coverage with mocked external dependencies |
 | Linting | ruff | Code style and strict PEP 8 compliance |
-| Deployment | Docker, Docker Compose | Multi-stage build with non-root user and persistent volume mount |
+| Deployment | Docker, Docker Compose | Single-stage slim container (`python:3.11-slim`) with non-root user and persistent volume |
 
 ---
 
@@ -251,20 +261,21 @@ python -m ruff check .
 
 ### Test Breakdown
 
-| File | Validated Behavior |
-|---|---|
-| `tests/test_rag.py` | Batch count and dimension validation, same-model retry, embedding compatibility, PDF continuation headers, key-value tables, bounded table chunks, document handlers |
-| `tests/test_handlers.py` | FSM validation, authorization, HTML escaping, lead persistence, admin callbacks, batch uploads |
-| `tests/test_llm.py` | Hybrid company/document context, missing facts, exact citations, generation retries and fallback, dialogue history |
-| `tests/test_db.py` | ORM schema, migrations, conversation history, document transactions, chunk cache, lead persistence |
-| `tests/test_i18n.py` | Symmetric Ukrainian/English keys, language switching, template formatting |
-| `tests/test_main.py` | Command routing, inline callbacks, logging, rate limiting |
+| File | Tests | Validated Behavior |
+|---|---:|---|
+| `tests/test_rag.py` | 101 | Batch count and dimension validation, same-model retry, embedding compatibility, PDF continuation headers, key-value tables, bounded table chunks, document handlers |
+| `tests/test_handlers.py` | 94 | FSM validation and command escape, authorization, HTML escaping, Lead Outbox persistence, 2-step RAG clear confirmation, corrupt file error handling, batch uploads |
+| `tests/test_db.py` | 74 | Code-First ORM schema, Alembic migrations, conversation history, document transactions, chunk cache, Lead Outbox queries |
+| `tests/test_llm.py` | 50 | Hybrid company/document context, missing facts, exact citations, generation retries and fallback, dialogue history |
+| `tests/test_main.py` | 25 | Command routing, FSM reset on `/start`/`/help`/`/language`, HTML name escaping, AI error boundary, `@dp.errors()`, inline callbacks, rate limiting |
+| `tests/test_i18n.py` | 24 | Symmetric Ukrainian/English keys, language switching, template formatting |
+| **Total** | **368** | **100% passing (offline, all external APIs mocked)** |
 
 ---
 
 ## Docker Deployment
 
-A multi-stage Docker build is provided for deployment on Linux VPS instances.
+A single-stage slim Docker build (`python:3.11-slim`, running as non-root `botuser`) is provided for deployment on Linux VPS instances.
 
 ### Launching with Docker Compose
 
@@ -316,26 +327,33 @@ SQLite files and indexed embeddings are preserved in the persistent volume mappe
 
 ```text
 ai_lead_bot/
-├── main.py                     # Entry point, router setup, and polling
+├── main.py                     # Entry point, routers, FSM command escape, and @dp.errors()
 ├── config.py                   # Environment validation and logging setup
 ├── i18n.py                     # Localization strings and helper functions
-├── keyboards.py                # InlineKeyboardMarkup builders
+├── keyboards.py                # InlineKeyboardMarkup builders (incl. 2-step clear confirm)
 ├── knowledge_base.txt          # Always-loaded company context with hot-reload
+├── alembic.ini                 # Alembic migration configuration
 ├── requirements.txt            # Runtime dependencies
 ├── requirements-dev.txt        # Development and testing dependencies
 ├── pytest.ini                  # Pytest configuration
-├── Dockerfile                  # Multi-stage production container build
+├── Dockerfile                  # Slim single-stage container build (non-root user)
 ├── docker-compose.yml          # Container configuration and persistent volume
 │
+├── alembic/
+│   ├── env.py                  # Async Alembic environment bound to services.models.Base
+│   └── versions/
+│       └── 0001_code_first.py  # Initial Code-First schema and legacy upgrade migration
+│
 ├── handlers/
-│   ├── admin.py                # Commands: /stats, /docs, /del_doc, batch file intake, clear all
-│   └── lead_form.py            # 3-step lead qualification FSM
+│   ├── admin.py                # /admin, /stats, /docs, /del_doc, 2-step clear, safe file intake
+│   └── lead_form.py            # 3-step lead qualification FSM with Lead Outbox sync
 │
 ├── services/
-│   ├── db.py                   # Async SQLite database layer (dialogs, chunks, clear_all)
+│   ├── models.py               # SQLAlchemy 2.0 ORM models (User, History, Document, Chunk, Lead)
+│   ├── db.py                   # Async SQLAlchemy 2.0 DB layer, Alembic init, and Lead Outbox
 │   ├── llm.py                  # Hybrid context, citations, Gemini cascade, and retries
-│   ├── rag.py                  # Vector indexing, coordinate filtering, and cosine search
-│   └── sheets.py               # Google Sheets append integration
+│   ├── rag.py                  # Vector indexing, cross-page tables, and cosine search
+│   └── sheets.py               # Timeout-guarded Google Sheets append integration
 │
 ├── middlewares/
 │   └── antispam.py             # Rate-limiting middleware (sliding window + admin bypass)
@@ -343,7 +361,7 @@ ai_lead_bot/
 ├── data/                       # Local SQLite storage directory
 │   └── chat_history.db
 │
-└── tests/                      # Automated test suite
+└── tests/                      # Automated test suite (368 tests)
     ├── conftest.py
     ├── test_db.py
     ├── test_handlers.py
@@ -358,9 +376,10 @@ ai_lead_bot/
 ## Security
 
 - Secrets (`.env`, `credentials.json`) are strictly excluded from version control via `.gitignore` and `.dockerignore`.
-- The container image executes as an unprivileged user (`botuser`, UID 10001).
-- Admin endpoints (`/stats`, `/docs`, `/del_doc`) check incoming user IDs against `ADMIN_ID`.
-- Incoming document uploads are restricted to `.pdf` and `.docx` extensions with validation prior to storage.
+- The container image executes as an unprivileged user (`botuser`).
+- Admin endpoints (`/admin`, `/stats`, `/docs`, `/del_doc`, admin callbacks) verify incoming user IDs against `ADMIN_ID`, and clearing the entire RAG database requires explicit two-step confirmation.
+- User names (`first_name`), lead form inputs, and document filenames are escaped via `html.escape()` before rendering in Telegram HTML messages.
+- Incoming document uploads are restricted to `.pdf` and `.docx` extensions (max 20 MB) with validation and error-safe status cleanup prior to storage.
 
 ---
 

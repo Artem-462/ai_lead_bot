@@ -11,6 +11,7 @@ import config
 from i18n import get_lang, t
 from keyboards import (
     get_admin_back_keyboard,
+    get_admin_clear_confirm_keyboard,
     get_admin_docs_keyboard,
     get_admin_panel_keyboard,
     get_main_keyboard,
@@ -230,12 +231,57 @@ async def cb_admin_clear_all_docs(callback: types.CallbackQuery) -> None:
         await callback.answer(t("stats_no_access", lang), show_alert=True)
         return
 
+    await callback.answer()
+    if callback.message:
+        await callback.message.edit_text(
+            t("admin_clear_all_confirm", lang),
+            reply_markup=get_admin_clear_confirm_keyboard(lang),
+        )
+
+
+@router.callback_query(F.data == "admin:confirm_clear_all")
+async def cb_admin_confirm_clear_all(callback: types.CallbackQuery) -> None:
+    user_id = callback.from_user.id
+    lang = await get_user_language(user_id) or get_lang(callback.from_user.language_code)
+
+    if not config.ADMIN_ID or user_id != config.ADMIN_ID:
+        await callback.answer(t("stats_no_access", lang), show_alert=True)
+        return
+
     count = await clear_all_documents()
     await callback.answer(t("doc_all_cleared", lang, count=count), show_alert=True)
     if callback.message:
         await callback.message.edit_text(
             t("doc_list_empty", lang),
             reply_markup=get_admin_back_keyboard(lang),
+        )
+
+
+@router.callback_query(F.data == "admin:cancel_clear_all")
+async def cb_admin_cancel_clear_all(callback: types.CallbackQuery) -> None:
+    user_id = callback.from_user.id
+    lang = await get_user_language(user_id) or get_lang(callback.from_user.language_code)
+
+    if not config.ADMIN_ID or user_id != config.ADMIN_ID:
+        await callback.answer(t("stats_no_access", lang), show_alert=True)
+        return
+
+    await callback.answer(t("admin_clear_all_cancelled", lang))
+    docs = await list_documents()
+    if callback.message:
+        if not docs:
+            await callback.message.edit_text(
+                t("doc_list_empty", lang),
+                reply_markup=get_admin_back_keyboard(lang),
+            )
+            return
+        doc_lines = [
+            f"• <b>{html.escape(d['filename'])}</b> ({d['file_type'].upper()}) — {d['chunk_count']} chunks ({d['uploaded_at'][:10]})"
+            for d in docs
+        ]
+        await callback.message.edit_text(
+            t("doc_list_header", lang, docs="\n".join(doc_lines)),
+            reply_markup=get_admin_docs_keyboard(docs, lang),
         )
 
 
@@ -250,7 +296,7 @@ async def cb_admin_back_main(callback: types.CallbackQuery) -> None:
 
     await callback.answer()
     if callback.message:
-        name = callback.from_user.first_name or ""
+        name = html.escape(callback.from_user.first_name or "")
         await callback.message.edit_text(
             t("welcome", lang, name=name),
             reply_markup=get_main_keyboard(lang, is_admin=True),
@@ -283,6 +329,7 @@ async def handle_document_upload(message: types.Message) -> None:
 
     safe_filename = html.escape(filename)
     wait_msg = await message.answer(t("doc_indexing", lang, filename=safe_filename))
+    status_text: str | None = None
     try:
         file_io = await message.bot.download(doc)
         if isinstance(file_io, io.BytesIO):
@@ -298,10 +345,24 @@ async def handle_document_upload(message: types.Message) -> None:
         is_replaced = res.get("is_replaced", False)
 
         msg_key = "doc_indexed_replaced" if is_replaced else "doc_indexed_new"
-        await wait_msg.edit_text(t(msg_key, lang, filename=safe_filename, chunks=chunks_count))
+        status_text = t(msg_key, lang, filename=safe_filename, chunks=chunks_count)
     except ValueError as e:
         config.logger.warning("Empty document %s: %s", filename, e)
-        await wait_msg.edit_text(t("doc_empty", lang, filename=safe_filename))
-    except (TelegramAPIError, OSError, RuntimeError) as e:
-        config.logger.error("Failed to index document %s: %s", filename, e)
-        await wait_msg.edit_text(t("server_error", lang))
+        status_text = t("doc_empty", lang, filename=safe_filename)
+    except Exception:  # noqa: BLE001 - catch any parser/embedding/storage error to clear wait status
+        config.logger.exception("Failed to index document %s", filename)
+        status_text = t("doc_index_error", lang, filename=safe_filename)
+    finally:
+        final_text = status_text or t("doc_index_error", lang, filename=safe_filename)
+        try:
+            await wait_msg.edit_text(final_text)
+        except (TelegramAPIError, OSError, RuntimeError):
+            config.logger.warning("Failed to edit indexing status message for %s", filename)
+            try:
+                await wait_msg.delete()
+            except (TelegramAPIError, OSError, RuntimeError):
+                config.logger.debug("Failed to delete indexing status message for %s", filename)
+            try:
+                await message.answer(final_text)
+            except (TelegramAPIError, OSError, RuntimeError):
+                config.logger.exception("Failed to send fallback status message for %s", filename)

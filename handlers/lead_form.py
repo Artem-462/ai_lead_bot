@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from aiogram import F, Router, types
 from aiogram.exceptions import TelegramAPIError
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.exc import SQLAlchemyError
@@ -26,8 +26,8 @@ class LeadForm(StatesGroup):
     waiting_for_request = State()
 
 
-@router.message(Command("cancel"))
-@router.callback_query(F.data == "form:cancel")
+@router.message(StateFilter("*"), Command("cancel"))
+@router.callback_query(StateFilter("*"), F.data == "form:cancel")
 async def cancel_handler(event: types.Message | types.CallbackQuery, state: FSMContext):
     user = event.from_user
     if isinstance(event, types.CallbackQuery):
@@ -49,8 +49,8 @@ async def cancel_handler(event: types.Message | types.CallbackQuery, state: FSMC
     await message.answer(t("cancel_form", lang), reply_markup=get_main_keyboard(lang, is_admin=is_admin))
 
 
-@router.message(Command("lead"))
-@router.callback_query(F.data == "menu:lead")
+@router.message(StateFilter("*"), Command("lead"))
+@router.callback_query(StateFilter("*"), F.data == "menu:lead")
 async def start_lead_form(event: types.Message | types.CallbackQuery, state: FSMContext):
     user = event.from_user
     if isinstance(event, types.CallbackQuery):
@@ -65,7 +65,7 @@ async def start_lead_form(event: types.Message | types.CallbackQuery, state: FSM
     await state.set_state(LeadForm.waiting_for_name)
 
 
-@router.message(LeadForm.waiting_for_name, F.text)
+@router.message(LeadForm.waiting_for_name, F.text, ~F.text.startswith("/"))
 async def process_name(message: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("lang") or get_lang(message.from_user.language_code)
@@ -76,11 +76,14 @@ async def process_name(message: types.Message, state: FSMContext):
         return
 
     await state.update_data(name=name)
-    await message.answer(t("lead_ask_phone", lang, name=name), reply_markup=get_cancel_keyboard(lang))
+    await message.answer(
+        t("lead_ask_phone", lang, name=html.escape(name)),
+        reply_markup=get_cancel_keyboard(lang),
+    )
     await state.set_state(LeadForm.waiting_for_phone)
 
 
-@router.message(LeadForm.waiting_for_phone, F.text)
+@router.message(LeadForm.waiting_for_phone, F.text, ~F.text.startswith("/"))
 async def process_phone(message: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("lang") or get_lang(message.from_user.language_code)
@@ -95,7 +98,7 @@ async def process_phone(message: types.Message, state: FSMContext):
     await state.set_state(LeadForm.waiting_for_request)
 
 
-@router.message(LeadForm.waiting_for_request, F.text)
+@router.message(LeadForm.waiting_for_request, F.text, ~F.text.startswith("/"))
 async def process_request(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     lang = user_data.get("lang") or get_lang(message.from_user.language_code)
@@ -179,9 +182,9 @@ async def process_request(message: types.Message, state: FSMContext):
         await state.clear()
 
 
-@router.message(LeadForm.waiting_for_name)
-@router.message(LeadForm.waiting_for_phone)
-@router.message(LeadForm.waiting_for_request)
+@router.message(LeadForm.waiting_for_name, ~F.text)
+@router.message(LeadForm.waiting_for_phone, ~F.text)
+@router.message(LeadForm.waiting_for_request, ~F.text)
 async def handle_non_text_in_form(message: types.Message, state: FSMContext):
     data = await state.get_data()
     lang = data.get("lang") or get_lang(message.from_user.language_code)

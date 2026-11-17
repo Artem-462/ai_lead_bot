@@ -73,3 +73,20 @@ def get_admin_back_keyboard(lang: Language = "uk") -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text=t("admin_btn_back", lang), callback_data="admin:panel")]
         ]
     )
+
+
+def get_admin_clear_confirm_keyboard(lang: Language = "uk") -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=t("admin_btn_confirm_clear_all", lang),
+                    callback_data="admin:confirm_clear_all",
+                ),
+                InlineKeyboardButton(
+                    text=t("admin_btn_cancel_clear_all", lang),
+                    callback_data="admin:cancel_clear_all",
+                ),
+            ]
+        ]
+    )

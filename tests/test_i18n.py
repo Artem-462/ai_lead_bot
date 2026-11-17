@@ -102,10 +102,15 @@ class TestT:
             "admin_btn_docs",
             "admin_btn_upload",
             "admin_btn_clear_all",
+            "admin_btn_confirm_clear_all",
+            "admin_btn_cancel_clear_all",
             "admin_btn_back",
             "admin_btn_back_main",
             "admin_upload_hint",
+            "admin_clear_all_confirm",
+            "admin_clear_all_cancelled",
             "doc_all_cleared",
+            "doc_index_error",
             "admin_del_btn",
         ]
         for key in admin_keys:

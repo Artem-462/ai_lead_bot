@@ -4,6 +4,7 @@ import io
 import logging
 import os
 import sys
+import zipfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID
@@ -178,6 +179,12 @@ class TestKeyboards:
         datas = [btn.callback_data for row in kb.inline_keyboard for btn in row]
         assert datas == ["admin:panel"]
 
+    @pytest.mark.parametrize("lang", ["uk", "en"])
+    def test_admin_clear_confirm_keyboard(self, lang):
+        kb = keyboards.get_admin_clear_confirm_keyboard(lang)
+        datas = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+        assert datas == ["admin:confirm_clear_all", "admin:cancel_clear_all"]
+
 
 class TestCmdStats:
     @pytest.mark.asyncio
@@ -331,6 +338,18 @@ class TestProcessName:
         state = make_state(data={"lang": "uk"})
         await lead_handler.process_name(msg, state)
         state.update_data.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_name_html_escaped_in_reply_and_stored_raw(self):
+        raw_name = "<b>Bob</b> & <script>"
+        msg = make_message(text=raw_name)
+        state = make_state(data={"lang": "uk"})
+        await lead_handler.process_name(msg, state)
+        state.update_data.assert_awaited_once_with(name=raw_name)
+        reply_text = msg.answer.call_args[0][0]
+        assert "&lt;b&gt;Bob&lt;/b&gt; &amp; &lt;script&gt;" in reply_text
+        assert "<b>Bob</b>" not in reply_text
+        assert "<script>" not in reply_text
 
 
 class TestProcessPhone:
@@ -720,6 +739,23 @@ class TestCancelHandler:
         call_text = cb.message.answer.call_args[0][0]
         assert call_text == t("cancel_form", "uk")
 
+    def test_lead_form_handlers_allow_slash_commands_to_escape_fsm(self):
+        by_func: dict[object, list[tuple[object, ...]]] = {}
+        for handler_fn, filters, _ in lead_handler.router.message.handlers:
+            by_func.setdefault(handler_fn, []).append(filters)
+
+        for handler in (
+            lead_handler.process_name,
+            lead_handler.process_phone,
+            lead_handler.process_request,
+        ):
+            filter_reprs = [repr(flt) for flt in by_func[handler][0]]
+            assert "~F.text.startswith('/')" in filter_reprs
+
+        for filters in by_func[lead_handler.handle_non_text_in_form]:
+            filter_reprs = [repr(flt) for flt in filters]
+            assert "~F.text" in filter_reprs
+
 
 class TestAdminPanel:
     @pytest.mark.asyncio
@@ -935,6 +971,18 @@ class TestAdminPanel:
         cb.message.edit_text.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_admin_back_main_escapes_html_first_name(self):
+        cb = make_callback(data="admin:back_main", user_id=999)
+        cb.from_user.first_name = "<i>Admin</i> & <tag>"
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_back_main(cb)
+        rendered = cb.message.edit_text.call_args[0][0]
+        assert "&lt;i&gt;Admin&lt;/i&gt; &amp; &lt;tag&gt;" in rendered
+        assert "<i>Admin</i>" not in rendered
+
+    @pytest.mark.asyncio
     async def test_upload_non_admin_rejected(self):
         msg = make_message(user_id=123)
         msg.document = MagicMock()
@@ -946,21 +994,21 @@ class TestAdminPanel:
         msg.answer.assert_awaited_once_with(t("non_text", "uk"))
 
     @pytest.mark.asyncio
-    async def test_admin_clear_all_docs_callback_admin(self):
+    async def test_admin_clear_all_docs_asks_confirmation_without_deleting(self):
         cb = make_callback(data="admin:clear_all_docs", user_id=999)
         with patch("handlers.admin.config") as mock_cfg, \
              patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
-             patch("handlers.admin.clear_all_documents", new_callable=AsyncMock, return_value=3) as mock_clear:
+             patch("handlers.admin.clear_all_documents", new_callable=AsyncMock) as mock_clear:
             mock_cfg.ADMIN_ID = 999
             await admin_handler.cb_admin_clear_all_docs(cb)
-        mock_clear.assert_awaited_once()
-        cb.answer.assert_awaited_once_with(t("doc_all_cleared", "uk", count=3), show_alert=True)
+        mock_clear.assert_not_awaited()
+        cb.answer.assert_awaited_once_with()
         cb.message.edit_text.assert_awaited_once()
-        assert t("doc_list_empty", "uk") in cb.message.edit_text.call_args[0][0]
+        assert cb.message.edit_text.call_args[0][0] == t("admin_clear_all_confirm", "uk")
         markup = cb.message.edit_text.call_args.kwargs.get("reply_markup")
         assert markup is not None
         callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
-        assert "admin:panel" in callbacks
+        assert callbacks == ["admin:confirm_clear_all", "admin:cancel_clear_all"]
 
     @pytest.mark.asyncio
     async def test_admin_clear_all_docs_callback_non_admin(self):
@@ -975,8 +1023,51 @@ class TestAdminPanel:
         cb.message.edit_text.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_admin_confirm_clear_all_deletes_documents(self):
+        cb = make_callback(data="admin:confirm_clear_all", user_id=999)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.clear_all_documents", new_callable=AsyncMock, return_value=3) as mock_clear:
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_confirm_clear_all(cb)
+        mock_clear.assert_awaited_once()
+        cb.answer.assert_awaited_once_with(t("doc_all_cleared", "uk", count=3), show_alert=True)
+        cb.message.edit_text.assert_awaited_once()
+        assert t("doc_list_empty", "uk") in cb.message.edit_text.call_args[0][0]
+        markup = cb.message.edit_text.call_args.kwargs.get("reply_markup")
+        assert markup is not None
+        callbacks = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        assert "admin:panel" in callbacks
+
+    @pytest.mark.asyncio
+    async def test_admin_confirm_clear_all_non_admin_forbidden(self):
+        cb = make_callback(data="admin:confirm_clear_all", user_id=123)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.clear_all_documents", new_callable=AsyncMock) as mock_clear:
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_confirm_clear_all(cb)
+        mock_clear.assert_not_awaited()
+        cb.answer.assert_awaited_once_with(t("stats_no_access", "uk"), show_alert=True)
+        cb.message.edit_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_admin_cancel_clear_all_keeps_documents(self):
+        cb = make_callback(data="admin:cancel_clear_all", user_id=999)
+        sample_docs = [{"id": 1, "filename": "price.pdf", "file_type": "pdf", "chunk_count": 4, "uploaded_at": "2026-10-22"}]
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.clear_all_documents", new_callable=AsyncMock) as mock_clear, \
+             patch("handlers.admin.list_documents", new_callable=AsyncMock, return_value=sample_docs):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_cancel_clear_all(cb)
+        mock_clear.assert_not_awaited()
+        cb.answer.assert_awaited_once_with(t("admin_clear_all_cancelled", "uk"))
+        cb.message.edit_text.assert_awaited_once()
+        assert "price.pdf" in cb.message.edit_text.call_args[0][0]
+
+    @pytest.mark.asyncio
     async def test_handle_document_upload_uses_index_lock(self):
-        import io
         msg = make_message(user_id=999)
         msg.document = MagicMock()
         msg.document.file_name = "test.pdf"
@@ -997,27 +1088,56 @@ class TestAdminPanel:
         assert "5" in wait_msg.edit_text.call_args[0][0]
 
     @pytest.mark.asyncio
-    async def test_admin_clear_all_docs_callback(self):
-        cb_admin = make_callback(data="admin:clear_all_docs", user_id=999)
-        with patch("handlers.admin.config") as mock_cfg, \
-             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
-             patch("handlers.admin.clear_all_documents", new_callable=AsyncMock, return_value=3) as mock_clear:
-            mock_cfg.ADMIN_ID = 999
-            await admin_handler.cb_admin_clear_all_docs(cb_admin)
-        mock_clear.assert_awaited_once()
-        cb_admin.answer.assert_awaited_once_with(t("doc_all_cleared", "uk", count=3), show_alert=True)
-        cb_admin.message.edit_text.assert_awaited_once()
-        assert t("doc_list_empty", "uk") in cb_admin.message.edit_text.call_args[0][0]
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            zipfile.BadZipFile("File is not a zip file"),
+            RuntimeError("Corrupted PDF stream"),
+            Exception("Unexpected embedding failure"),
+        ],
+    )
+    async def test_handle_document_upload_corrupted_or_api_error_updates_wait_msg(self, exc):
+        msg = make_message(user_id=999)
+        msg.document = MagicMock()
+        msg.document.file_name = "broken<1>.docx"
+        msg.document.file_size = 512
+        msg.bot.download = AsyncMock(return_value=io.BytesIO(b"not a valid zip"))
+        wait_msg = MagicMock()
+        wait_msg.edit_text = AsyncMock()
+        wait_msg.delete = AsyncMock()
+        msg.answer = AsyncMock(return_value=wait_msg)
 
-        cb_non_admin = make_callback(data="admin:clear_all_docs", user_id=123)
         with patch("handlers.admin.config") as mock_cfg, \
              patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
-             patch("handlers.admin.clear_all_documents", new_callable=AsyncMock) as mock_clear_unauth:
+             patch("handlers.admin.index_document", new_callable=AsyncMock, side_effect=exc):
             mock_cfg.ADMIN_ID = 999
-            await admin_handler.cb_admin_clear_all_docs(cb_non_admin)
-        mock_clear_unauth.assert_not_awaited()
-        cb_non_admin.answer.assert_awaited_once_with(t("stats_no_access", "uk"), show_alert=True)
-        cb_non_admin.message.edit_text.assert_not_awaited()
+            await admin_handler.handle_document_upload(msg)
+
+        wait_msg.edit_text.assert_awaited_once_with(
+            t("doc_index_error", "uk", filename="broken&lt;1&gt;.docx")
+        )
+
+    @pytest.mark.asyncio
+    async def test_handle_document_upload_deletes_wait_msg_when_edit_fails(self):
+        msg = make_message(user_id=999)
+        msg.document = MagicMock()
+        msg.document.file_name = "broken.pdf"
+        msg.document.file_size = 512
+        msg.bot.download = AsyncMock(return_value=io.BytesIO(b"bad pdf"))
+        wait_msg = MagicMock()
+        wait_msg.edit_text = AsyncMock(side_effect=RuntimeError("message cannot be edited"))
+        wait_msg.delete = AsyncMock()
+        msg.answer = AsyncMock(side_effect=[wait_msg, None])
+
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.index_document", new_callable=AsyncMock, side_effect=zipfile.BadZipFile("corrupt")):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.handle_document_upload(msg)
+
+        wait_msg.delete.assert_awaited_once()
+        assert msg.answer.await_count == 2
+        assert msg.answer.call_args_list[1].args[0] == t("doc_index_error", "uk", filename="broken.pdf")
 
     @pytest.mark.asyncio
     async def test_batch_document_upload_concurrent(self):

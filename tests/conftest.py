@@ -81,11 +81,16 @@ class _PassthroughDecorator:
 
 
 class _Observer:
+    def __init__(self):
+        self.handlers = []
+
     def __call__(self, *args, **kwargs):
         import inspect
         if len(args) == 1 and inspect.iscoroutinefunction(args[0]) and not kwargs:
+            self.handlers.append((args[0], (), {}))
             return args[0]
         def _decorator(func):
+            self.handlers.append((func, args, kwargs))
             return func
         return _decorator
 
@@ -100,6 +105,7 @@ class _FakeRouter:
     def __init__(self, *args, **kwargs):
         self.message = _Observer()
         self.callback_query = _Observer()
+        self.errors = _Observer()
         self.sub_routers = []
 
     def include_router(self, router, *a, **kw):
@@ -110,20 +116,33 @@ class _FakeRouter:
 
 
 class _FakeF:
+    def __init__(self, expr="F"):
+        self.expr = expr
+
+    def __repr__(self):
+        return self.expr
+
     def __getattr__(self, name):
-        return _FakeF()
+        return _FakeF(f"{self.expr}.{name}")
+
     def __call__(self, *a, **kw):
-        return _FakeF()
+        args = ", ".join(repr(x) for x in a)
+        return _FakeF(f"{self.expr}({args})")
+
     def __eq__(self, other):
-        return _FakeF()
+        return _FakeF(f"{self.expr} == {other!r}")
+
     def __ne__(self, other):
-        return _FakeF()
+        return _FakeF(f"{self.expr} != {other!r}")
+
     def in_(self, items):
-        return _FakeF()
+        return _FakeF(f"{self.expr}.in_({items!r})")
+
     def startswith(self, prefix):
-        return _FakeF()
+        return _FakeF(f"{self.expr}.startswith({prefix!r})")
+
     def __invert__(self):
-        return _FakeF()
+        return _FakeF(f"~{self.expr}")
 
 
 _aiogram = _types.ModuleType("aiogram")
@@ -140,9 +159,15 @@ class _StubMessage:
 class _StubCallbackQuery:
     pass
 
+class _StubErrorEvent:
+    def __init__(self, update=None, exception=None):
+        self.update = update
+        self.exception = exception
+
 _aiogram_types_mod = _types.ModuleType("aiogram.types")
 _aiogram_types_mod.Message = _StubMessage  # type: ignore
 _aiogram_types_mod.CallbackQuery = _StubCallbackQuery  # type: ignore
+_aiogram_types_mod.ErrorEvent = _StubErrorEvent  # type: ignore
 _aiogram_types_mod.ReplyKeyboardMarkup = _mock.MagicMock  # type: ignore
 _aiogram_types_mod.ReplyKeyboardRemove = _mock.MagicMock  # type: ignore
 _aiogram_types_mod.KeyboardButton = _mock.MagicMock  # type: ignore

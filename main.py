@@ -1,12 +1,13 @@
 import asyncio
+import html
 
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardRemove
-from sqlalchemy.exc import SQLAlchemyError
 
 import config
 from handlers import admin, lead_form
@@ -26,8 +27,27 @@ dp.include_router(admin.router)
 dp.include_router(user_router)
 
 
-@user_router.message(CommandStart())
-async def cmd_start(message: types.Message) -> None:
+async def _clear_active_state(state: FSMContext | None) -> None:
+    if state is not None and await state.get_state() is not None:
+        await state.clear()
+
+
+@dp.errors()
+async def global_error_handler(event: types.ErrorEvent) -> bool:
+    update_id = getattr(event.update, "update_id", None)
+    config.logger.error(
+        "Unhandled error while processing update %s: %s",
+        update_id,
+        event.exception,
+        exc_info=event.exception,
+    )
+    return True
+
+
+@user_router.message(StateFilter("*"), CommandStart())
+async def cmd_start(message: types.Message, state: FSMContext | None = None) -> None:
+    await _clear_active_state(state)
+
     user_id = message.from_user.id
     if config.ADMIN_ID and user_id != config.ADMIN_ID:
         config.logger.info("User %s connected (ADMIN_ID configured as %s)", user_id, config.ADMIN_ID)
@@ -39,7 +59,7 @@ async def cmd_start(message: types.Message) -> None:
         await message.answer(LANG_SELECT_MSG, reply_markup=get_language_keyboard())
         return
 
-    name = message.from_user.first_name or ""
+    name = html.escape(message.from_user.first_name or "")
     is_admin = bool(config.ADMIN_ID) and user_id == config.ADMIN_ID
     await message.answer(
         t("welcome", lang, name=name),
@@ -47,8 +67,9 @@ async def cmd_start(message: types.Message) -> None:
     )
 
 
-@user_router.message(Command("language"))
-async def cmd_language(message: types.Message) -> None:
+@user_router.message(StateFilter("*"), Command("language"))
+async def cmd_language(message: types.Message, state: FSMContext | None = None) -> None:
+    await _clear_active_state(state)
     await message.answer("🌐", reply_markup=ReplyKeyboardRemove())
     await message.answer(LANG_SELECT_MSG, reply_markup=get_language_keyboard())
 
@@ -63,7 +84,7 @@ async def handle_language_choice(callback: types.CallbackQuery) -> None:
     await set_user_language(user_id, selected_lang)
     await callback.answer()
 
-    name = callback.from_user.first_name or ""
+    name = html.escape(callback.from_user.first_name or "")
     is_admin = bool(config.ADMIN_ID) and user_id == config.ADMIN_ID
     await callback.message.answer(
         t("welcome", selected_lang, name=name),
@@ -94,8 +115,10 @@ async def handle_menu_language(callback: types.CallbackQuery) -> None:
     await callback.message.answer(LANG_SELECT_MSG, reply_markup=get_language_keyboard())
 
 
-@user_router.message(Command("help"))
-async def cmd_help(message: types.Message) -> None:
+@user_router.message(StateFilter("*"), Command("help"))
+async def cmd_help(message: types.Message, state: FSMContext | None = None) -> None:
+    await _clear_active_state(state)
+
     user_id = message.from_user.id
     lang = await get_user_language(user_id) or get_lang(message.from_user.language_code)
     is_admin = bool(config.ADMIN_ID) and user_id == config.ADMIN_ID
@@ -128,9 +151,19 @@ async def handle_user_message(message: types.Message) -> None:
 
         username = message.from_user.username or message.from_user.first_name
         await log_dialog(user_id, username, message.text, answer)
-    except (TelegramAPIError, SQLAlchemyError, TimeoutError, RuntimeError, ValueError, KeyError, OSError) as e:
-        config.logger.error("Failed to process user message: %s", e)
-        await wait_message.edit_text(t("server_error", lang))
+    except Exception:  # noqa: BLE001 - catch any RAG/LLM/API error to clear thinking status
+        config.logger.exception("Failed to process user message for user %s", user_id)
+        try:
+            await wait_message.edit_text(t("server_error", lang))
+        except (TelegramAPIError, OSError, RuntimeError):
+            try:
+                await wait_message.delete()
+            except (TelegramAPIError, OSError, RuntimeError):
+                config.logger.debug("Failed to delete thinking message for user %s", user_id)
+            try:
+                await message.answer(t("server_error", lang))
+            except (TelegramAPIError, OSError, RuntimeError):
+                config.logger.exception("Failed to send error fallback for user %s", user_id)
 
 
 async def main() -> None:
