@@ -211,16 +211,36 @@ def _parse_answer_sources(
     reply: str, chunks: list[dict[str, Any]]
 ) -> tuple[str, list[dict[str, Any]]]:
     first_line, _, body = reply.strip().partition("\n")
-    if first_line.strip() == "BASE_ANSWER":
+    stripped_first = first_line.strip()
+    if stripped_first == "BASE_ANSWER" or (stripped_first.startswith("BASE_ANSWER:") and body.strip()):
         return body.strip(), []
-    if first_line.startswith("DOCUMENT_ANSWER:"):
-        identifiers = first_line.partition(":")[2].strip()
-        if not re.fullmatch(r"\d+(?:\s*,\s*\d+)*", identifiers):
-            raise ValueError("Invalid document source identifiers")
-        indices = {int(identifier) for identifier in identifiers.split(",")}
-        if not indices or any(index < 1 or index > len(chunks) for index in indices):
-            raise ValueError("Document source identifier is outside the retrieved context")
-        return body.strip(), [chunk for index, chunk in enumerate(chunks, 1) if index in indices]
+    if stripped_first.startswith("DOCUMENT_ANSWER:"):
+        identifiers = stripped_first.partition(":")[2].strip()
+        valid_indices: set[int] = set()
+        invalid_tokens: list[str] = []
+
+        if not identifiers:
+            logger.warning("Invalid document source identifiers: empty marker; stripping source footer")
+        else:
+            for raw_token in identifiers.split(","):
+                token = raw_token.strip()
+                if token.isdigit():
+                    idx = int(token)
+                    if 1 <= idx <= len(chunks):
+                        valid_indices.add(idx)
+                        continue
+                invalid_tokens.append(token)
+
+            if invalid_tokens:
+                logger.warning(
+                    "Invalid document source identifiers %r (raw=%r, available_chunks=%d); filtering out",
+                    invalid_tokens,
+                    identifiers,
+                    len(chunks),
+                )
+
+        selected_chunks = [chunk for index, chunk in enumerate(chunks, 1) if index in valid_indices]
+        return body.strip(), selected_chunks
     return reply.strip(), chunks
 
 
@@ -299,11 +319,7 @@ async def get_ai_answer(user_id: int, user_text: str, lang: str = "uk") -> str:
         return t("rag_no_answer", lang)
 
     reply_text = _clean_markdown(reply_text)
-    try:
-        reply_text, source_chunks = _parse_answer_sources(reply_text, chunks)
-    except ValueError as exc:
-        logger.error("Invalid answer sources: %s", exc)
-        return t("llm_error", lang)
+    reply_text, source_chunks = _parse_answer_sources(reply_text, chunks)
     if reply_text == "NO_RAG_ANSWER":
         return t("rag_no_answer", lang)
     if not reply_text:

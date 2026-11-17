@@ -1,4 +1,5 @@
 import importlib.util
+import logging
 import os
 import sys
 from unittest.mock import AsyncMock, patch
@@ -408,19 +409,62 @@ class TestHybridKnowledgeBase:
         assert result == "Бот збирає заявки цілодобово."
         search.assert_not_awaited()
 
-    @pytest.mark.parametrize("identifiers", ["0", "2", "1, 99", "price.pdf", ""])
+    @pytest.mark.parametrize("identifiers", ["0", "2", "price.pdf", "knowledge_base.txt", ""])
     @pytest.mark.asyncio
-    async def test_invalid_document_citations_are_rejected(self, identifiers):
+    async def test_invalid_document_citations_are_stripped_with_warning(self, identifiers, caplog):
+        chunks = [{"content": "Ціна: $300", "filename": "price.pdf", "page_number": 2}]
+        caplog.set_level(logging.WARNING)
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=chunks),
+            patch.object(
+                llm,
+                "_call_model",
+                new_callable=AsyncMock,
+                return_value=f"DOCUMENT_ANSWER: {identifiers}\nЦіна — $300.",
+            ),
+        ):
+            result = await llm.get_ai_answer(123, "Яка ціна?", "uk")
+        assert result == "Ціна — $300."
+        assert "DOCUMENT_ANSWER" not in result
+        assert "📄" not in result
+        assert "Invalid document source identifiers" in caplog.text
+        assert llm._get_history(123)
+
+    @pytest.mark.parametrize("identifiers", ["1, 99", "1, knowledge_base.txt", "0, 1"])
+    @pytest.mark.asyncio
+    async def test_mixed_valid_and_invalid_citations_keep_only_valid_sources(self, identifiers, caplog):
+        chunks = [{"content": "Ціна: $300", "filename": "price.pdf", "page_number": 2}]
+        caplog.set_level(logging.WARNING)
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=chunks),
+            patch.object(
+                llm,
+                "_call_model",
+                new_callable=AsyncMock,
+                return_value=f"DOCUMENT_ANSWER: {identifiers}\nЦіна — $300.",
+            ),
+        ):
+            result = await llm.get_ai_answer(123, "Яка ціна?", "uk")
+        assert result == "Ціна — $300.\n\n📄 Джерело: price.pdf (стор. 2)"
+        assert "DOCUMENT_ANSWER" not in result
+        assert "Invalid document source identifiers" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_base_answer_with_suffix_returns_clean_body(self):
         chunks = [{"content": "Ціна: $300", "filename": "price.pdf", "page_number": 2}]
         with (
             patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=chunks),
-            patch.object(llm, "_call_model", new_callable=AsyncMock,
-                         return_value=f"DOCUMENT_ANSWER: {identifiers}\nЦіна — $300."),
+            patch.object(
+                llm,
+                "_call_model",
+                new_callable=AsyncMock,
+                return_value="BASE_ANSWER: knowledge_base.txt\nБазовий тариф — $100.",
+            ),
         ):
-            result = await llm.get_ai_answer(123, "Яка ціна?", "uk")
-        assert result == t("llm_error", "uk")
+            result = await llm.get_ai_answer(123, "Який базовий тариф?", "uk")
+        assert result == "Базовий тариф — $100."
+        assert "BASE_ANSWER" not in result
         assert "📄" not in result
-        assert not llm._get_history(123)
 
     @pytest.mark.asyncio
     async def test_source_marker_without_answer_returns_empty_response_message(self):
