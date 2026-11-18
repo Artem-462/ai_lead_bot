@@ -101,6 +101,7 @@ class TestT:
             "admin_btn_stats",
             "admin_btn_docs",
             "admin_btn_upload",
+            "admin_btn_retry_leads",
             "admin_btn_clear_all",
             "admin_btn_confirm_clear_all",
             "admin_btn_cancel_clear_all",
@@ -112,9 +113,12 @@ class TestT:
             "doc_all_cleared",
             "doc_index_error",
             "admin_del_btn",
+            "admin_retry_leads_empty",
+            "admin_retry_leads_running",
+            "admin_retry_leads_report",
         ]
         for key in admin_keys:
             assert key in TEXTS[lang]
-            val = t(key, lang, filename="sample.pdf", count=3)
+            val = t(key, lang, filename="sample.pdf", count=3, sent=2, failed=1)
             assert len(val) > 0
 

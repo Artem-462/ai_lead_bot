@@ -7,6 +7,7 @@ from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import ReplyKeyboardRemove
 
 import config
@@ -18,7 +19,7 @@ from services.db import get_user_language, init_db, log_dialog, set_user_languag
 from services.llm import get_ai_answer
 
 bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
+dp = Dispatcher(events_isolation=SimpleEventIsolation())
 user_router = Router()
 
 dp.message.middleware(AntiSpamMiddleware(limit_seconds=2))
@@ -169,7 +170,7 @@ async def handle_user_message(message: types.Message) -> None:
 async def main() -> None:
     await init_db()
     config.logger.info("Bot started successfully, listening for updates...")
-    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.delete_webhook(drop_pending_updates=False)
     await dp.start_polling(bot)
 
 

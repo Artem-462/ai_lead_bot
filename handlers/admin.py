@@ -18,16 +18,22 @@ from keyboards import (
 )
 from services.db import (
     clear_all_documents,
+    count_failed_leads,
     delete_document_by_id,
     delete_document_by_name,
     get_dialog_stats,
+    get_failed_leads,
     get_user_language,
     list_documents,
+    mark_lead_failed,
+    mark_lead_sent,
 )
 from services.rag import index_document
+from services.sheets import add_lead_to_sheet
 
 router = Router()
 _index_lock = asyncio.Lock()
+_retry_leads_lock = asyncio.Lock()
 
 
 @router.message(Command("stats"))
@@ -102,8 +108,9 @@ async def show_admin_panel(event: types.Message | types.CallbackQuery) -> None:
             await event.answer(t("stats_no_access", lang))
         return
 
+    failed_leads_count = await count_failed_leads()
     text = t("admin_panel_title", lang)
-    reply_markup = get_admin_panel_keyboard(lang)
+    reply_markup = get_admin_panel_keyboard(lang, failed_leads_count=failed_leads_count)
     if isinstance(event, types.CallbackQuery):
         await event.answer()
         if event.message:
@@ -283,6 +290,61 @@ async def cb_admin_cancel_clear_all(callback: types.CallbackQuery) -> None:
             t("doc_list_header", lang, docs="\n".join(doc_lines)),
             reply_markup=get_admin_docs_keyboard(docs, lang),
         )
+
+
+@router.callback_query(F.data == "admin:retry_leads")
+async def cb_admin_retry_leads(callback: types.CallbackQuery) -> None:
+    user_id = callback.from_user.id
+    lang = await get_user_language(user_id) or get_lang(callback.from_user.language_code)
+
+    if not config.ADMIN_ID or user_id != config.ADMIN_ID:
+        await callback.answer(t("stats_no_access", lang), show_alert=True)
+        return
+
+    async with _retry_leads_lock:
+        leads = await get_failed_leads()
+        if not leads:
+            await callback.answer(t("admin_retry_leads_empty", lang))
+            if callback.message:
+                try:
+                    await callback.message.edit_text(
+                        t("admin_retry_leads_empty", lang),
+                        reply_markup=get_admin_back_keyboard(lang),
+                    )
+                except TelegramAPIError:
+                    pass
+            return
+
+        await callback.answer(t("admin_retry_leads_running", lang, count=len(leads)))
+
+        sent_count = 0
+        failed_count = 0
+        for lead in leads:
+            try:
+                success = await add_lead_to_sheet(
+                    lead.name, lead.phone, lead.request_text, lead_uuid=lead.lead_uuid
+                )
+                if not success:
+                    raise RuntimeError("Google Sheets did not accept the lead")
+            except Exception as error:  # noqa: BLE001 - keep lead failed on any synchronization error
+                failed_count += 1
+                await mark_lead_failed(lead.id, f"{type(error).__name__}: {error}")
+                config.logger.warning(
+                    "Failed lead retry unsuccessful (lead_uuid=%s, error=%s)",
+                    lead.lead_uuid,
+                    type(error).__name__,
+                )
+            else:
+                sent_count += 1
+                await mark_lead_sent(lead.id)
+
+    if callback.message:
+        report_text = t("admin_retry_leads_report", lang, sent=sent_count, failed=failed_count)
+        markup = get_admin_back_keyboard(lang)
+        try:
+            await callback.message.edit_text(report_text, reply_markup=markup)
+        except TelegramAPIError:
+            await callback.message.answer(report_text, reply_markup=markup)
 
 
 @router.callback_query(F.data == "admin:back_main")

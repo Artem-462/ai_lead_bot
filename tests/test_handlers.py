@@ -158,6 +158,21 @@ class TestKeyboards:
         datas = [btn.callback_data for row in kb.inline_keyboard for btn in row]
         assert datas == ["admin:stats", "admin:docs", "admin:upload_hint", "admin:back_main"]
 
+    @pytest.mark.parametrize("lang", ["uk", "en"])
+    def test_admin_panel_keyboard_with_failed_leads(self, lang):
+        kb = keyboards.get_admin_panel_keyboard(lang, failed_leads_count=3)
+        buttons = [btn for row in kb.inline_keyboard for btn in row]
+        datas = [btn.callback_data for btn in buttons]
+        assert datas == [
+            "admin:stats",
+            "admin:docs",
+            "admin:upload_hint",
+            "admin:retry_leads",
+            "admin:back_main",
+        ]
+        retry_btn = buttons[3]
+        assert retry_btn.text == t("admin_btn_retry_leads", lang, count=3)
+
     def test_admin_docs_keyboard(self):
         docs = [{"id": 1, "filename": "test1.pdf"}, {"filename": "test2.docx"}]
         kb = keyboards.get_admin_docs_keyboard(docs, "uk")
@@ -1170,3 +1185,141 @@ class TestAdminPanel:
         for name, wait_msg in zip(doc_names, wait_messages):
             wait_msg.edit_text.assert_awaited_once()
             assert t("doc_indexed_new", "uk", filename=name, chunks=3) in wait_msg.edit_text.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_show_admin_panel_includes_retry_button_when_failed_leads_exist(self):
+        cb = make_callback(data="admin:panel", user_id=999)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.count_failed_leads", new_callable=AsyncMock, return_value=2):
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.show_admin_panel(cb)
+        markup = cb.message.edit_text.call_args.kwargs.get("reply_markup")
+        buttons = [btn for row in markup.inline_keyboard for btn in row]
+        callbacks = [btn.callback_data for btn in buttons]
+        assert "admin:retry_leads" in callbacks
+        retry_btn = next(btn for btn in buttons if btn.callback_data == "admin:retry_leads")
+        assert retry_btn.text == t("admin_btn_retry_leads", "uk", count=2)
+
+    @pytest.mark.asyncio
+    async def test_admin_retry_leads_non_admin_forbidden(self):
+        cb = make_callback(data="admin:retry_leads", user_id=123)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.get_failed_leads", new_callable=AsyncMock) as mock_failed, \
+             patch("handlers.admin.add_lead_to_sheet", new_callable=AsyncMock) as mock_sheet:
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_retry_leads(cb)
+        mock_failed.assert_not_awaited()
+        mock_sheet.assert_not_awaited()
+        cb.answer.assert_awaited_once_with(t("stats_no_access", "uk"), show_alert=True)
+        cb.message.edit_text.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_admin_retry_leads_empty(self):
+        cb = make_callback(data="admin:retry_leads", user_id=999)
+        with patch("handlers.admin.config") as mock_cfg, \
+             patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("handlers.admin.get_failed_leads", new_callable=AsyncMock, return_value=[]), \
+             patch("handlers.admin.add_lead_to_sheet", new_callable=AsyncMock) as mock_sheet:
+            mock_cfg.ADMIN_ID = 999
+            await admin_handler.cb_admin_retry_leads(cb)
+        mock_sheet.assert_not_awaited()
+        cb.answer.assert_awaited_once_with(t("admin_retry_leads_empty", "uk"))
+        cb.message.edit_text.assert_awaited_once()
+        assert cb.message.edit_text.call_args[0][0] == t("admin_retry_leads_empty", "uk")
+
+    @pytest.mark.asyncio
+    async def test_admin_retry_leads_success(self, real_db, monkeypatch):
+        first = await real_db.create_lead(101, "Anna", "+380991234567", "Need a bot")
+        second = await real_db.create_lead(102, "Oleh", "+380991234568", "Need RAG")
+        await real_db.mark_lead_failed(first.id, "TimeoutError: initial")
+        await real_db.mark_lead_failed(second.id, "OSError: initial")
+
+        for fn_name in ("get_failed_leads", "mark_lead_sent", "mark_lead_failed"):
+            monkeypatch.setattr(admin_handler, fn_name, getattr(real_db, fn_name))
+        sheet_mock = AsyncMock(return_value=True)
+        monkeypatch.setattr(admin_handler, "add_lead_to_sheet", sheet_mock)
+        monkeypatch.setattr(admin_handler.config, "ADMIN_ID", 999)
+
+        cb = make_callback(data="admin:retry_leads", user_id=999)
+        with patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            await admin_handler.cb_admin_retry_leads(cb)
+
+        assert sheet_mock.await_count == 2
+        assert sheet_mock.call_args_list[0].args == ("Anna", "+380991234567", "Need a bot")
+        assert sheet_mock.call_args_list[0].kwargs == {"lead_uuid": first.lead_uuid}
+        assert sheet_mock.call_args_list[1].args == ("Oleh", "+380991234568", "Need RAG")
+        assert sheet_mock.call_args_list[1].kwargs == {"lead_uuid": second.lead_uuid}
+
+        assert await real_db.count_failed_leads() == 0
+        async with real_db.async_session() as session:
+            saved_first = await session.get(Lead, first.id)
+            saved_second = await session.get(Lead, second.id)
+        assert saved_first.status == "sent"
+        assert saved_first.attempts == 2
+        assert saved_first.last_error is None
+        assert saved_first.sent_at is not None
+        assert saved_second.status == "sent"
+        assert saved_second.attempts == 2
+        assert saved_second.last_error is None
+
+        cb.answer.assert_awaited_once_with(t("admin_retry_leads_running", "uk", count=2))
+        cb.message.edit_text.assert_awaited_once()
+        assert cb.message.edit_text.call_args[0][0] == t("admin_retry_leads_report", "uk", sent=2, failed=0)
+
+    @pytest.mark.asyncio
+    async def test_admin_retry_leads_sheets_failure_updates_attempts_and_error(self, real_db, monkeypatch):
+        first = await real_db.create_lead(101, "Anna", "+380991234567", "Need a bot")
+        second = await real_db.create_lead(102, "Oleh", "+380991234568", "Need RAG")
+        await real_db.mark_lead_failed(first.id, "OSError: first error")
+        await real_db.mark_lead_failed(second.id, "OSError: first error")
+
+        for fn_name in ("get_failed_leads", "mark_lead_sent", "mark_lead_failed"):
+            monkeypatch.setattr(admin_handler, fn_name, getattr(real_db, fn_name))
+        sheet_mock = AsyncMock(side_effect=[True, RuntimeError("Google Sheets 503")])
+        monkeypatch.setattr(admin_handler, "add_lead_to_sheet", sheet_mock)
+        monkeypatch.setattr(admin_handler.config, "ADMIN_ID", 999)
+
+        cb = make_callback(data="admin:retry_leads", user_id=999)
+        with patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="en"):
+            await admin_handler.cb_admin_retry_leads(cb)
+
+        assert await real_db.count_failed_leads() == 1
+        async with real_db.async_session() as session:
+            saved_first = await session.get(Lead, first.id)
+            saved_second = await session.get(Lead, second.id)
+        assert saved_first.status == "sent"
+        assert saved_first.attempts == 2
+        assert saved_first.last_error is None
+        assert saved_second.status == "failed"
+        assert saved_second.attempts == 2
+        assert saved_second.last_error == "RuntimeError: Google Sheets 503"
+        assert saved_second.sent_at is None
+
+        cb.message.edit_text.assert_awaited_once()
+        assert cb.message.edit_text.call_args[0][0] == t("admin_retry_leads_report", "en", sent=1, failed=1)
+
+    @pytest.mark.asyncio
+    async def test_admin_retry_leads_respects_sheets_timeout(self, real_db, hanging_sheets, monkeypatch):
+        sheets, async_api, cancelled = hanging_sheets
+        lead = await real_db.create_lead(101, "Anna", "+380991234567", "Need a bot")
+        await real_db.mark_lead_failed(lead.id, "OSError: initial")
+
+        for fn_name in ("get_failed_leads", "mark_lead_sent", "mark_lead_failed"):
+            monkeypatch.setattr(admin_handler, fn_name, getattr(real_db, fn_name))
+        monkeypatch.setattr(admin_handler, "add_lead_to_sheet", sheets.add_lead_to_sheet)
+        monkeypatch.setattr(admin_handler.config, "ADMIN_ID", 999)
+
+        cb = make_callback(data="admin:retry_leads", user_id=999)
+        with patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"):
+            await admin_handler.cb_admin_retry_leads(cb)
+
+        async_api.wait_for.assert_awaited_once()
+        assert cancelled.is_set()
+        async with real_db.async_session() as session:
+            saved = await session.get(Lead, lead.id)
+        assert saved.status == "failed"
+        assert saved.attempts == 2
+        assert saved.last_error.startswith("TimeoutError:")
+        assert cb.message.edit_text.call_args[0][0] == t("admin_retry_leads_report", "uk", sent=0, failed=1)

@@ -593,3 +593,26 @@ class TestLeads:
         assert [lead.id for lead in await real_db.get_pending_leads(2)] == [lead.id for lead in leads[1:3]]
         assert await real_db.get_pending_leads(0) == []
         assert await real_db.get_pending_leads(-1) == []
+
+    async def test_failed_leads_query_and_count(self, real_db):
+        pending = await real_db.create_lead(1, "Pending", "1234567", "Request 1")
+        sent = await real_db.create_lead(2, "Sent", "1234568", "Request 2")
+        failed_first = await real_db.create_lead(3, "Failed One", "1234569", "Request 3")
+        failed_second = await real_db.create_lead(4, "Failed Two", "1234570", "Request 4")
+        await real_db.mark_lead_sent(sent.id)
+        await real_db.mark_lead_failed(failed_first.id, "TimeoutError: first")
+        await real_db.mark_lead_failed(failed_second.id, "OSError: second")
+
+        assert pending.status == "pending"
+        assert await real_db.count_failed_leads() == 2
+        assert [lead.id for lead in await real_db.get_failed_leads()] == [
+            failed_first.id,
+            failed_second.id,
+        ]
+        assert [lead.id for lead in await real_db.get_failed_leads(1)] == [failed_first.id]
+        assert await real_db.get_failed_leads(0) == []
+        assert await real_db.get_failed_leads(-1) == []
+
+        await real_db.mark_lead_sent(failed_first.id)
+        assert await real_db.count_failed_leads() == 1
+        assert [lead.id for lead in await real_db.get_failed_leads()] == [failed_second.id]

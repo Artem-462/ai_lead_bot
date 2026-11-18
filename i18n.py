@@ -79,6 +79,7 @@ TEXTS: dict[Language, dict[str, str]] = {
         "admin_btn_stats": "📊 Статистика",
         "admin_btn_docs": "📂 Документи в базі",
         "admin_btn_upload": "📥 Додати документ",
+        "admin_btn_retry_leads": "🔄 Довідправити заявки ({count})",
         "admin_btn_clear_all": "🗑 Очистити всю базу RAG",
         "admin_btn_confirm_clear_all": "✅ Так, видалити все",
         "admin_btn_cancel_clear_all": "❌ Скасувати",
@@ -96,6 +97,13 @@ TEXTS: dict[Language, dict[str, str]] = {
         "admin_clear_all_cancelled": "Очищення бази скасовано.",
         "doc_all_cleared": "🗑 Усі документи ({count}) видалено! Бот перейшов у базовий режим.",
         "admin_del_btn": "🗑 {filename}",
+        "admin_retry_leads_empty": "✅ Немає заявок із помилкою відправки.",
+        "admin_retry_leads_running": "⏳ Довідправляю заявки ({count})...",
+        "admin_retry_leads_report": (
+            "🔄 <b>Результат довідправки заявок:</b>\n\n"
+            "✅ Успішно відправлено: <b>{sent}</b>\n"
+            "❌ Залишилось із помилкою: <b>{failed}</b>"
+        ),
     },
     "en": {
         "welcome": (
@@ -171,6 +179,7 @@ TEXTS: dict[Language, dict[str, str]] = {
         "admin_btn_stats": "📊 Statistics",
         "admin_btn_docs": "📂 Documents in KB",
         "admin_btn_upload": "📥 Add document",
+        "admin_btn_retry_leads": "🔄 Retry failed leads ({count})",
         "admin_btn_clear_all": "🗑 Clear entire RAG database",
         "admin_btn_confirm_clear_all": "✅ Yes, delete all",
         "admin_btn_cancel_clear_all": "❌ Cancel",
@@ -188,6 +197,13 @@ TEXTS: dict[Language, dict[str, str]] = {
         "admin_clear_all_cancelled": "Database clearing cancelled.",
         "doc_all_cleared": "🗑 All documents ({count}) deleted! Bot switched to Lite mode.",
         "admin_del_btn": "🗑 {filename}",
+        "admin_retry_leads_empty": "✅ There are no failed leads to retry.",
+        "admin_retry_leads_running": "⏳ Retrying failed leads ({count})...",
+        "admin_retry_leads_report": (
+            "🔄 <b>Lead retry report:</b>\n\n"
+            "✅ Sent successfully: <b>{sent}</b>\n"
+            "❌ Still failed: <b>{failed}</b>"
+        ),
     },
 }
 

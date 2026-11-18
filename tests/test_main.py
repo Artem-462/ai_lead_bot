@@ -3,6 +3,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiogram.fsm.storage.memory import SimpleEventIsolation
 from sqlalchemy.exc import SQLAlchemyError
 
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -279,3 +280,18 @@ class TestMainHandlers:
         assert handled is True
         mock_error.assert_called_once()
         assert mock_error.call_args.kwargs["exc_info"] is err
+
+    def test_dispatcher_uses_simple_event_isolation(self):
+        assert isinstance(main.dp.fsm.events_isolation, SimpleEventIsolation)
+        assert isinstance(main.dp.events_isolation, SimpleEventIsolation)
+
+    @pytest.mark.asyncio
+    async def test_main_preserves_pending_updates_on_startup(self):
+        with patch("main.init_db", new_callable=AsyncMock) as mock_init_db, \
+             patch.object(main.bot, "delete_webhook", new_callable=AsyncMock) as mock_delete_webhook, \
+             patch.object(main.dp, "start_polling", new_callable=AsyncMock) as mock_start_polling:
+            await main.main()
+
+        mock_init_db.assert_awaited_once()
+        mock_delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
+        mock_start_polling.assert_awaited_once_with(main.bot)

@@ -107,6 +107,9 @@ class _FakeRouter:
         self.callback_query = _Observer()
         self.errors = _Observer()
         self.sub_routers = []
+        self.events_isolation = kwargs.get("events_isolation")
+        self.fsm = _types.SimpleNamespace(events_isolation=self.events_isolation)
+        self.start_polling = _mock.AsyncMock()
 
     def include_router(self, router, *a, **kw):
         self.sub_routers.append(router)
@@ -201,6 +204,20 @@ _aiogram_fsm_state.StatesGroup = object  # type: ignore
 _aiogram_fsm_state.State = lambda: None  # type: ignore
 sys.modules["aiogram.fsm.state"] = _aiogram_fsm_state
 
+
+class _SimpleEventIsolation:
+    def __init__(self, *args, **kwargs):
+        pass
+
+
+_aiogram_fsm_storage = _types.ModuleType("aiogram.fsm.storage")
+_aiogram_fsm_storage_memory = _types.ModuleType("aiogram.fsm.storage.memory")
+_aiogram_fsm_storage_memory.SimpleEventIsolation = _SimpleEventIsolation  # type: ignore
+_aiogram_fsm_storage.memory = _aiogram_fsm_storage_memory  # type: ignore
+_aiogram_fsm.storage = _aiogram_fsm_storage  # type: ignore
+sys.modules["aiogram.fsm.storage"] = _aiogram_fsm_storage
+sys.modules["aiogram.fsm.storage.memory"] = _aiogram_fsm_storage_memory
+
 _aiogram_enums = _types.ModuleType("aiogram.enums")
 class _ParseMode:
     HTML = "HTML"
@@ -258,6 +275,8 @@ _db_mod_stub.create_lead = _mock.AsyncMock(side_effect=_make_test_lead)  # type:
 _db_mod_stub.mark_lead_sent = _mock.AsyncMock()  # type: ignore
 _db_mod_stub.mark_lead_failed = _mock.AsyncMock()  # type: ignore
 _db_mod_stub.get_pending_leads = _mock.AsyncMock(return_value=[])  # type: ignore
+_db_mod_stub.get_failed_leads = _mock.AsyncMock(return_value=[])  # type: ignore
+_db_mod_stub.count_failed_leads = _mock.AsyncMock(return_value=0)  # type: ignore
 sys.modules["services.db"] = _db_mod_stub
 _services_pkg.db = _db_mod_stub  # type: ignore
 

@@ -38,15 +38,25 @@ def get_cancel_keyboard(lang: Language = "uk") -> InlineKeyboardMarkup:
     )
 
 
-def get_admin_panel_keyboard(lang: Language = "uk") -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=t("admin_btn_stats", lang), callback_data="admin:stats")],
-            [InlineKeyboardButton(text=t("admin_btn_docs", lang), callback_data="admin:docs")],
-            [InlineKeyboardButton(text=t("admin_btn_upload", lang), callback_data="admin:upload_hint")],
-            [InlineKeyboardButton(text=t("admin_btn_back_main", lang), callback_data="admin:back_main")],
-        ]
+def get_admin_panel_keyboard(lang: Language = "uk", failed_leads_count: int = 0) -> InlineKeyboardMarkup:
+    keyboard = [
+        [InlineKeyboardButton(text=t("admin_btn_stats", lang), callback_data="admin:stats")],
+        [InlineKeyboardButton(text=t("admin_btn_docs", lang), callback_data="admin:docs")],
+        [InlineKeyboardButton(text=t("admin_btn_upload", lang), callback_data="admin:upload_hint")],
+    ]
+    if failed_leads_count > 0:
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    text=t("admin_btn_retry_leads", lang, count=failed_leads_count),
+                    callback_data="admin:retry_leads",
+                )
+            ]
+        )
+    keyboard.append(
+        [InlineKeyboardButton(text=t("admin_btn_back_main", lang), callback_data="admin:back_main")]
     )
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def get_admin_docs_keyboard(docs: list[dict[str, Any]], lang: Language = "uk") -> InlineKeyboardMarkup:

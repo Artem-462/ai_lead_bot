@@ -356,3 +356,19 @@ async def get_pending_leads(limit: int = 20) -> list[Lead]:
     )
     async with async_session() as session:
         return list(await session.scalars(statement))
+
+
+async def get_failed_leads(limit: int | None = None) -> list[Lead]:
+    if limit is not None and limit <= 0:
+        return []
+    statement = select(Lead).where(Lead.status == "failed").order_by(Lead.created_at, Lead.id)
+    if limit is not None:
+        statement = statement.limit(limit)
+    async with async_session() as session:
+        return list(await session.scalars(statement))
+
+
+async def count_failed_leads() -> int:
+    statement = select(func.count(Lead.id)).where(Lead.status == "failed")
+    async with async_session() as session:
+        return int((await session.scalar(statement)) or 0)
