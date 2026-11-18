@@ -28,11 +28,18 @@ When a client asks about pricing, services, or technical details, the bot refere
 
 ## Demo & Screenshots
 
-| Feature | Preview |
-|---|---|
-| **Hybrid RAG Consultation & Citations**<br>Answers grounded in `knowledge_base.txt` and uploaded PDF/DOCX documents with exact page citations. | ![Hybrid RAG Answer](docs/screenshots/rag_answer.png) |
-| **Admin Control Panel & Lead Retry**<br>Inline dashboard for usage stats, document management, two-step purge confirmation, and one-tap `Retry Failed Leads`. | ![Admin Control Panel](docs/screenshots/admin_panel.png) |
-| **Lead Qualification Form (FSM)**<br>Interactive 3-step lead intake with input validation, command escape, and transactional Google Sheets sync. | ![Lead Qualification Form](docs/screenshots/lead_form.png) |
+### Client Flow: Hybrid RAG & Lead Intake
+
+| Hybrid RAG Consultation | Lead Qualification Form (FSM) |
+| :---: | :---: |
+| <img src="docs/screenshots/rag_answer.jpg" alt="Hybrid RAG Answer" width="360"> | <img src="docs/screenshots/lead_form.jpg" alt="Lead Qualification Form" width="360"> |
+| Grounded answers from `knowledge_base.txt` + PDF/DOCX with exact page citations | 3-step validated form with SQLite Lead Outbox UUID & admin alert |
+
+### Admin Control Panel
+
+| Admin Panel | Live Statistics | Indexed Knowledge Base |
+| :---: | :---: | :---: |
+| <img src="docs/screenshots/admin_panel.png" alt="Admin Panel" width="240"> | <img src="docs/screenshots/admin_stats.png" alt="Bot Statistics" width="240"> | <img src="docs/screenshots/admin_docs.png" alt="Indexed Documents" width="260"> |
 
 ---
 
@@ -372,7 +379,7 @@ ai_lead_bot/
 │       └── 0001_code_first.py  # Initial Code-First schema and legacy upgrade migration
 │
 ├── docs/
-│   └── screenshots/            # UI demo screenshots (rag_answer.png, admin_panel.png, lead_form.png)
+│   └── screenshots/            # UI demo screenshots (rag_answer.jpg, lead_form.jpg, admin_panel.png, admin_stats.png, admin_docs.png)
 │
 ├── handlers/
 │   ├── admin.py                # /admin, /stats, /docs, /del_doc, Retry Failed Leads, 2-step clear, batch intake
