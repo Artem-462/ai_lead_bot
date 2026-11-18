@@ -3,7 +3,7 @@ import html
 
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
+from aiogram.enums import ChatType, ParseMode
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -15,12 +15,20 @@ from handlers import admin, lead_form
 from i18n import LANG_SELECT_MSG, get_lang, t
 from keyboards import get_language_keyboard, get_main_keyboard
 from middlewares.antispam import AntiSpamMiddleware
-from services.db import get_user_language, init_db, log_dialog, set_user_language
-from services.llm import get_ai_answer
+from services.db import (
+    clear_user_history,
+    get_user_language,
+    init_db,
+    log_dialog,
+    set_user_language,
+)
+from services.llm import clear_history, get_ai_answer
 
 bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(events_isolation=SimpleEventIsolation())
 user_router = Router()
+user_router.message.filter(F.chat.type == ChatType.PRIVATE)
+user_router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
 
 dp.message.middleware(AntiSpamMiddleware(limit_seconds=2))
 dp.include_router(lead_form.router)
@@ -125,6 +133,22 @@ async def cmd_help(message: types.Message, state: FSMContext | None = None) -> N
     is_admin = bool(config.ADMIN_ID) and user_id == config.ADMIN_ID
     await message.answer(
         t("help", lang),
+        reply_markup=get_main_keyboard(lang, is_admin=is_admin),
+    )
+
+
+@user_router.message(StateFilter("*"), Command("clear"))
+async def cmd_clear(message: types.Message, state: FSMContext | None = None) -> None:
+    await _clear_active_state(state)
+
+    user_id = message.from_user.id
+    await clear_user_history(user_id)
+    clear_history(user_id)
+
+    lang = await get_user_language(user_id) or get_lang(message.from_user.language_code)
+    is_admin = bool(config.ADMIN_ID) and user_id == config.ADMIN_ID
+    await message.answer(
+        t("history_cleared", lang),
         reply_markup=get_main_keyboard(lang, is_admin=is_admin),
     )
 

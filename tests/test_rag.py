@@ -422,6 +422,27 @@ class TestEmbeddingConfiguration:
         with pytest.raises(ValueError):
             self.load_config(monkeypatch)
 
+    def test_default_history_and_output_token_limits(self, monkeypatch):
+        monkeypatch.delenv("MAX_HISTORY_CHARS", raising=False)
+        monkeypatch.delenv("MAX_OUTPUT_TOKENS", raising=False)
+        module = self.load_config(monkeypatch)
+        assert module.MAX_HISTORY_CHARS == 6000
+        assert module.MAX_OUTPUT_TOKENS == 1024
+
+    def test_configured_history_and_output_token_limits(self, monkeypatch):
+        monkeypatch.setenv("MAX_HISTORY_CHARS", "3500")
+        monkeypatch.setenv("MAX_OUTPUT_TOKENS", "512")
+        module = self.load_config(monkeypatch)
+        assert module.MAX_HISTORY_CHARS == 3500
+        assert module.MAX_OUTPUT_TOKENS == 512
+
+    @pytest.mark.parametrize("history_chars,output_tokens", [("0", "1024"), ("-10", "1024"), ("6000", "0"), ("6000", "abc")])
+    def test_invalid_token_and_history_limits(self, monkeypatch, history_chars, output_tokens):
+        monkeypatch.setenv("MAX_HISTORY_CHARS", history_chars)
+        monkeypatch.setenv("MAX_OUTPUT_TOKENS", output_tokens)
+        with pytest.raises(ValueError):
+            self.load_config(monkeypatch)
+
 
 class TestEmbeddings:
     @pytest.fixture(autouse=True)
@@ -759,6 +780,9 @@ class TestVectorSearch:
     @pytest.fixture(autouse=True)
     def embedding_dimension(self, monkeypatch):
         monkeypatch.setattr(rag, "EMBEDDING_DIM", 3)
+        rag.clear_query_embedding_cache()
+        yield
+        rag.clear_query_embedding_cache()
 
     @pytest.mark.asyncio
     async def test_search_knowledge_base_cosine_threshold(self):
@@ -854,6 +878,94 @@ class TestVectorSearch:
              patch.object(rag, "get_embedding", new_callable=AsyncMock) as embed:
             assert await rag.search_knowledge_base("query") == []
         embed.assert_not_awaited()
+
+
+class TestQueryEmbeddingCache:
+    @pytest.fixture(autouse=True)
+    def setup_cache(self, monkeypatch):
+        monkeypatch.setattr(rag, "EMBEDDING_DIM", 3)
+        rag.clear_query_embedding_cache()
+        yield
+        rag.clear_query_embedding_cache()
+
+    @pytest.mark.asyncio
+    async def test_repeated_query_uses_cache_without_calling_api(self):
+        chunk = {
+            "content": "Tariff Standard is $300",
+            "filename": "price.pdf",
+            "page_number": 1,
+            "chunk_index": 0,
+            "embedding": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            "embedding_model": rag.EMBEDDING_MODEL,
+            "embedding_dim": 3,
+        }
+        response = embedding_response([[1.0, 0.0, 0.0]])
+        with (
+            patch.object(rag, "get_all_chunks_with_metadata", new_callable=AsyncMock, return_value=[chunk]),
+            patch.object(rag.client.aio.models, "embed_content", new_callable=AsyncMock, return_value=response) as embed,
+        ):
+            first = await rag.search_knowledge_base("Яка ціна бота?")
+            second = await rag.search_knowledge_base("  яка   ціна бота? ")
+
+        assert len(first) == 1
+        assert len(second) == 1
+        embed.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_cache_evicts_least_recently_used_entry_over_limit(self):
+        vector = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        with patch.object(rag, "get_embedding", new_callable=AsyncMock, return_value=vector) as embed:
+            for i in range(128):
+                await rag.get_query_embedding(f"query {i}")
+            assert len(rag._query_embedding_cache) == 128
+            assert embed.await_count == 128
+
+            await rag.get_query_embedding("query 0")
+            assert embed.await_count == 128
+
+            await rag.get_query_embedding("query 128")
+            assert len(rag._query_embedding_cache) == 128
+            assert embed.await_count == 129
+
+            await rag.get_query_embedding("query 0")
+            assert embed.await_count == 129
+
+            await rag.get_query_embedding("query 1")
+            assert embed.await_count == 130
+
+    @pytest.mark.asyncio
+    async def test_cache_cleared_on_document_mutations(self, real_db):
+        vector = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        chunk = {"page_number": 1, "chunk_index": 0, "content": "Price $300", "embedding": vector}
+
+        with patch.object(rag, "get_embedding", new_callable=AsyncMock, return_value=vector) as embed:
+            await rag.get_query_embedding("price")
+            assert len(rag._query_embedding_cache) == 1
+            assert embed.await_count == 1
+
+            await real_db.upsert_document("price.pdf", "pdf", [chunk], embedding_dim=3)
+            assert len(rag._query_embedding_cache) == 0
+
+            await rag.get_query_embedding("price")
+            assert embed.await_count == 2
+
+            await real_db.delete_document_by_name("price.pdf")
+            assert len(rag._query_embedding_cache) == 0
+
+            await real_db.upsert_document("guide.pdf", "pdf", [chunk], embedding_dim=3)
+            doc_id = (await real_db.list_documents())[0]["id"]
+            await rag.get_query_embedding("guide")
+            assert len(rag._query_embedding_cache) == 1
+
+            await real_db.delete_document_by_id(doc_id)
+            assert len(rag._query_embedding_cache) == 0
+
+            await real_db.upsert_document("faq.pdf", "pdf", [chunk], embedding_dim=3)
+            await rag.get_query_embedding("faq")
+            assert len(rag._query_embedding_cache) == 1
+
+            await real_db.clear_all_documents()
+            assert len(rag._query_embedding_cache) == 0
 
 
 class TestRagAnswers:

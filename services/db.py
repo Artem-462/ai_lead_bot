@@ -1,4 +1,5 @@
 import os
+import sys
 from typing import Any
 from uuid import uuid4
 
@@ -54,6 +55,10 @@ async_session = async_sessionmaker(engine, expire_on_commit=False)
 def invalidate_chunks_cache() -> None:
     global _chunks_cache
     _chunks_cache = None
+    rag_module = sys.modules.get("services.rag")
+    clear_cache = getattr(rag_module, "clear_query_embedding_cache", None)
+    if callable(clear_cache):
+        clear_cache()
 
 
 def _run_migrations(connection: Connection) -> None:
@@ -114,6 +119,12 @@ async def log_dialog(
                 History(user_id=user_id, role="assistant", content=bot_response, timestamp=now),
             ]
         )
+
+
+async def clear_user_history(user_id: int) -> int:
+    async with async_session.begin() as session:
+        result = await session.execute(delete(History).where(History.user_id == user_id))
+    return int(result.rowcount or 0)
 
 
 async def get_dialog_stats() -> dict[str, int]:

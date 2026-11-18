@@ -16,10 +16,12 @@ TEXTS: dict[Language, dict[str, str]] = {
             "ℹ️ <b>Можливості бота:</b>\n\n"
             "• 💬 Напишіть будь-яке запитання — ШІ відповість одразу.\n"
             "• 📝 Залишити заявку: /lead або кнопка нижче.\n"
+            "• 🧹 Очистити контекст діалогу: /clear\n"
             "• 🌐 Змінити мову: /language\n"
             "• Скасування форми: /cancel або кнопка «Скасувати».\n"
             "• Довідка: /help"
         ),
+        "history_cleared": "🧹 Історію діалогу очищено. Можемо почати розмову з чистого аркуша!",
         "about": (
             "Привіт! Я Артем — приватний Python-розробник. 👨‍💻\n\n"
             "Створюю Telegram-ботів під ключ: від зручних меню до інтеграції зі ШІ "
@@ -116,10 +118,12 @@ TEXTS: dict[Language, dict[str, str]] = {
             "ℹ️ <b>Bot features:</b>\n\n"
             "• 💬 Type any question — AI replies instantly.\n"
             "• 📝 Submit a request: /lead or the button below.\n"
+            "• 🧹 Clear conversation context: /clear\n"
             "• 🌐 Change language: /language\n"
             "• Cancel form: /cancel or the «Cancel» button.\n"
             "• Help: /help"
         ),
+        "history_cleared": "🧹 Conversation history cleared. We can start fresh!",
         "about": (
             "Hey! I'm Artem — a freelance Python developer. 👨‍💻\n\n"
             "I build Telegram bots end-to-end: from simple menus to AI assistants "

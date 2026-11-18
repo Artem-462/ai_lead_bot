@@ -3,6 +3,7 @@ import re
 from uuid import uuid4
 
 from aiogram import F, Router, types
+from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -16,6 +17,8 @@ from services.db import create_lead, get_user_language, mark_lead_failed, mark_l
 from services.sheets import add_lead_to_sheet
 
 router = Router()
+router.message.filter(F.chat.type == ChatType.PRIVATE)
+router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
 
 PHONE_REGEX = re.compile(r'^\+?[0-9\s\-\(\)]{7,20}$')
 

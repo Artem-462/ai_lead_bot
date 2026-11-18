@@ -16,6 +16,11 @@ EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "3072"))
 if not EMBEDDING_MODEL or EMBEDDING_DIM <= 0:
     raise ValueError("EMBEDDING_MODEL must be non-empty and EMBEDDING_DIM must be positive")
 
+MAX_HISTORY_CHARS: int = int(os.getenv("MAX_HISTORY_CHARS", "6000"))
+MAX_OUTPUT_TOKENS: int = int(os.getenv("MAX_OUTPUT_TOKENS", "1024"))
+if MAX_HISTORY_CHARS <= 0 or MAX_OUTPUT_TOKENS <= 0:
+    raise ValueError("MAX_HISTORY_CHARS and MAX_OUTPUT_TOKENS must be positive")
+
 DEFAULT_GEMINI_MODELS = [
     "gemini-3.8-flash",
     "gemini-2.5-flash",

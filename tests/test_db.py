@@ -320,6 +320,22 @@ class TestLogDialog:
         await real_db.log_dialog(1, "alice", "hello", "answer")
         assert await real_db.get_user_language(1) == "en"
 
+    async def test_clear_user_history_removes_only_target_user_rows(self, real_db):
+        await real_db.log_dialog(1, "alice", "q1", "a1")
+        await real_db.log_dialog(1, "alice", "q2", "a2")
+        await real_db.log_dialog(2, "bob", "q3", "a3")
+
+        deleted = await real_db.clear_user_history(1)
+        assert deleted == 4
+        assert await real_db.clear_user_history(1) == 0
+
+        async with real_db.async_session() as session:
+            remaining = list(await session.scalars(select(History).order_by(History.id)))
+        assert [(row.user_id, row.role, row.content) for row in remaining] == [
+            (2, "user", "q3"),
+            (2, "assistant", "a3"),
+        ]
+
 
 class TestGetDialogStats:
     async def test_empty_db_all_zeros(self, real_db):

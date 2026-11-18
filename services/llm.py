@@ -41,7 +41,108 @@ def load_knowledge_base() -> str:
 
 MAX_HISTORY = 8
 MAX_SESSIONS = 500
+SEARCH_QUERY_MAX_CHARS = 500
 _sessions: dict[int, list[genai_types.Content]] = {}
+
+
+def _extract_content_text(content: genai_types.Content) -> str:
+    parts = getattr(content, "parts", None) or []
+    texts = [part.text for part in parts if isinstance(getattr(part, "text", None), str) and part.text]
+    return "\n".join(texts).strip()
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    cutoff = text.rfind(" ", 0, limit)
+    if cutoff >= limit // 2:
+        return text[:cutoff].rstrip()
+    return text[:limit].rstrip()
+
+
+def _build_search_query(
+    user_text: str,
+    history: list[genai_types.Content],
+    max_length: int = SEARCH_QUERY_MAX_CHARS,
+) -> str:
+    if not history:
+        return user_text
+
+    prev_user = ""
+    prev_assistant = ""
+    for item in reversed(history):
+        role = getattr(item, "role", None)
+        text = _extract_content_text(item)
+        if not text:
+            continue
+        if role == "user" and not prev_user:
+            prev_user = " ".join(text.split())
+        elif role in ("model", "assistant") and not prev_assistant:
+            cleaned = text.split("\n\n📄", 1)[0]
+            prev_assistant = " ".join(cleaned.split())
+        if prev_user and prev_assistant:
+            break
+
+    if not prev_user and not prev_assistant:
+        return user_text
+
+    current = " ".join(user_text.split())
+    if len(current) >= max_length:
+        return _truncate_text(current, max_length)
+
+    context_parts: list[str] = []
+    if prev_user and prev_assistant:
+        budget = max_length - len(current) - 2
+        if budget > 0:
+            half = budget // 2
+            if len(prev_user) <= half:
+                user_part = prev_user
+                assistant_part = _truncate_text(prev_assistant, budget - len(user_part))
+            elif len(prev_assistant) <= half:
+                assistant_part = prev_assistant
+                user_part = _truncate_text(prev_user, budget - len(assistant_part))
+            else:
+                user_part = _truncate_text(prev_user, half)
+                assistant_part = _truncate_text(prev_assistant, budget - len(user_part))
+            if user_part:
+                context_parts.append(user_part)
+            if assistant_part:
+                context_parts.append(assistant_part)
+    else:
+        single = prev_user or prev_assistant
+        budget = max_length - len(current) - 1
+        part = _truncate_text(single, budget)
+        if part:
+            context_parts.append(part)
+
+    if not context_parts:
+        return current
+
+    return "\n".join([*context_parts, current])[:max_length]
+
+
+def _trim_history_by_chars(
+    history: list[genai_types.Content],
+    max_chars: int,
+) -> list[genai_types.Content]:
+    if not history or max_chars <= 0:
+        return []
+
+    selected: list[genai_types.Content] = []
+    total_chars = 0
+    for item in reversed(history):
+        item_len = len(_extract_content_text(item))
+        if total_chars + item_len > max_chars:
+            break
+        selected.append(item)
+        total_chars += item_len
+
+    selected.reverse()
+    while selected and getattr(selected[0], "role", None) in ("model", "assistant"):
+        selected.pop(0)
+    return selected
 
 
 def _get_history(user_id: int) -> list[genai_types.Content]:
@@ -141,12 +242,14 @@ async def _call_model(
     system_instruction: str,
     timeout: float = 20.0,
 ) -> str | None:
+    max_output_tokens = getattr(config, "MAX_OUTPUT_TOKENS", 1024)
     response = await asyncio.wait_for(
         client.aio.models.generate_content(
             model=model_name,
             contents=contents,
             config=genai_types.GenerateContentConfig(
                 system_instruction=system_instruction,
+                max_output_tokens=max_output_tokens,
                 automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(disable=True),
             ),
         ),
@@ -255,13 +358,15 @@ async def get_ai_answer(user_id: int, user_text: str, lang: str = "uk") -> str:
         logger.warning("Document availability check failed; using the company knowledge base: %s", exc)
         documents_available = False
 
+    raw_history = list(_get_history(user_id))
     chunks: list[dict[str, Any]] = []
 
     if documents_available:
         from services.rag import search_knowledge_base
 
+        search_query = _build_search_query(user_text, raw_history)
         try:
-            chunks = await search_knowledge_base(user_text)
+            chunks = await search_knowledge_base(search_query)
         except (aiosqlite.Error, SQLAlchemyError, OSError, RuntimeError, ValueError, errors.APIError, errors.ClientError) as exc:
             logger.warning("Document search failed; using the company knowledge base: %s", exc)
 
@@ -270,7 +375,8 @@ async def get_ai_answer(user_id: int, user_text: str, lang: str = "uk") -> str:
     else:
         system_instruction = _build_system_instruction(knowledge_data)
 
-    history = list(_get_history(user_id))
+    max_history_chars = getattr(config, "MAX_HISTORY_CHARS", 6000)
+    history = _trim_history_by_chars(raw_history, max_history_chars)
     history.append(
         genai_types.Content(role="user", parts=[genai_types.Part(text=user_text)])
     )

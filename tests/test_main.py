@@ -3,6 +3,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiogram.enums import ChatType
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -295,3 +296,48 @@ class TestMainHandlers:
         mock_init_db.assert_awaited_once()
         mock_delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
         mock_start_polling.assert_awaited_once_with(main.bot)
+
+    @pytest.mark.parametrize("lang", ["uk", "en"])
+    @pytest.mark.asyncio
+    async def test_cmd_clear_clears_history_and_fsm_state(self, lang):
+        msg = make_message(text="/clear", user_id=123, lang_code=lang)
+        state = make_state(current="LeadForm:waiting_for_name")
+        with (
+            patch("main.clear_user_history", new_callable=AsyncMock, return_value=4) as mock_clear_db,
+            patch("main.clear_history") as mock_clear_mem,
+            patch("main.get_user_language", new_callable=AsyncMock, return_value=lang),
+        ):
+            await main.cmd_clear(msg, state)
+
+        state.clear.assert_awaited_once()
+        mock_clear_db.assert_awaited_once_with(123)
+        mock_clear_mem.assert_called_once_with(123)
+        msg.answer.assert_awaited_once()
+        assert msg.answer.call_args.args[0] == t("history_cleared", lang)
+        assert "reply_markup" in msg.answer.call_args.kwargs
+
+    @pytest.mark.parametrize("lang", ["uk", "en"])
+    def test_help_text_mentions_clear_command(self, lang):
+        assert "/clear" in t("help", lang)
+
+    @pytest.mark.parametrize("router", [main.user_router, lead_form.router, admin.router])
+    def test_routers_filter_to_private_chats_only(self, router):
+        assert router.message.filters
+        assert router.callback_query.filters
+
+        private_msg = make_message(text="hello")
+        private_msg.chat = MagicMock(type=ChatType.PRIVATE)
+        assert all(flt.resolve(private_msg) for flt in router.message.filters)
+
+        for non_private in (ChatType.GROUP, ChatType.SUPERGROUP, ChatType.CHANNEL):
+            group_msg = make_message(text="hello")
+            group_msg.chat = MagicMock(type=non_private)
+            assert not all(flt.resolve(group_msg) for flt in router.message.filters)
+
+            group_cb = make_callback(data="menu:lead")
+            group_cb.message.chat = MagicMock(type=non_private)
+            assert not all(flt.resolve(group_cb) for flt in router.callback_query.filters)
+
+        private_cb = make_callback(data="menu:lead")
+        private_cb.message.chat = MagicMock(type=ChatType.PRIVATE)
+        assert all(flt.resolve(private_cb) for flt in router.callback_query.filters)

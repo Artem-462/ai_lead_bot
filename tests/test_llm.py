@@ -483,3 +483,90 @@ class TestHybridKnowledgeBase:
             {"filename": "price.pdf", "page_number": 4},
         ]
         assert llm.format_sources(chunks, "uk") == "price.pdf (стор. 2, 4)"
+
+
+class TestContextualSearchAndTokenLimits:
+    @pytest.fixture(autouse=True)
+    def clean_sessions(self):
+        llm._sessions.clear()
+        yield
+        llm._sessions.clear()
+
+    @pytest.mark.asyncio
+    async def test_followup_question_builds_contextual_search_query_and_preserves_llm_input(self):
+        chunks = [{"content": "Стандарт ($300): бот + CRM + підтримка", "filename": "price.pdf", "page_number": 2}]
+        with (
+            patch.object(llm, "load_knowledge_base", return_value="Базовий опис"),
+            patch.object(llm, "has_documents", new_callable=AsyncMock, return_value=True),
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=chunks) as search,
+            patch.object(llm, "_call_model", new_callable=AsyncMock) as model,
+        ):
+            model.side_effect = [
+                "DOCUMENT_ANSWER: 1\nЄ 3 тарифи: Базовий ($100), Стандарт ($300), Преміум ($600).",
+                "DOCUMENT_ANSWER: 1\nУ тариф Стандарт входять бот, CRM та підтримка.",
+            ]
+            await llm.get_ai_answer(42, "Які є тарифи на ботів?", "uk")
+            followup = "А що входить у другий варіант?"
+            await llm.get_ai_answer(42, followup, "uk")
+
+        assert search.await_count == 2
+        assert search.await_args_list[0].args == ("Які є тарифи на ботів?",)
+        enriched_query = search.await_args_list[1].args[0]
+        assert "Які є тарифи на ботів?" in enriched_query
+        assert "Стандарт ($300)" in enriched_query
+        assert followup in enriched_query
+        assert "📄" not in enriched_query
+        assert len(enriched_query) <= 500
+
+        llm_contents = model.await_args_list[1].args[1]
+        assert len(llm_contents) == 3
+        assert llm._extract_content_text(llm_contents[-1]) == followup
+
+    def test_contextual_search_query_caps_length_at_500_chars(self):
+        history = [
+            llm.genai_types.Content(role="user", parts=[llm.genai_types.Part(text="Питання " * 80)]),
+            llm.genai_types.Content(role="model", parts=[llm.genai_types.Part(text="Відповідь " * 80)]),
+        ]
+        followup = "А другий варіант?"
+        query = llm._build_search_query(followup, history)
+        assert len(query) <= 500
+        assert query.endswith(followup)
+
+    @pytest.mark.asyncio
+    async def test_history_is_trimmed_to_max_history_chars_keeping_recent_turns(self, monkeypatch):
+        monkeypatch.setattr(llm.config, "MAX_HISTORY_CHARS", 120)
+        llm._update_history(77, "Old question " + "a" * 40, "Old answer " + "b" * 40)
+        llm._update_history(77, "Mid question " + "c" * 30, "Mid answer " + "d" * 30)
+        llm._update_history(77, "Recent question", "Recent answer")
+
+        with (
+            patch.object(llm, "has_documents", new_callable=AsyncMock, return_value=False),
+            patch.object(llm, "_call_model", new_callable=AsyncMock, return_value="Final answer") as model,
+        ):
+            await llm.get_ai_answer(77, "New question", "uk")
+
+        sent_contents = model.await_args.args[1]
+        sent_texts = [llm._extract_content_text(item) for item in sent_contents]
+        assert sent_texts[-1] == "New question"
+        prior_history = sent_contents[:-1]
+        assert prior_history[0].role == "user"
+        assert sum(len(llm._extract_content_text(item)) for item in prior_history) <= 120
+        assert "Recent question" in sent_texts
+        assert "Recent answer" in sent_texts
+        assert not any(text.startswith("Old question") for text in sent_texts)
+
+    @pytest.mark.asyncio
+    async def test_call_model_passes_max_output_tokens_to_generate_content_config(self, monkeypatch):
+        monkeypatch.setattr(llm.config, "MAX_OUTPUT_TOKENS", 777)
+        fake_response = type("Resp", (), {"text": "Answer"})()
+        mock_generate = AsyncMock(return_value=fake_response)
+        with (
+            patch.object(llm.client.aio.models, "generate_content", mock_generate),
+            patch.object(llm.genai_types, "GenerateContentConfig", wraps=llm.genai_types.GenerateContentConfig) as mock_cfg,
+        ):
+            result = await llm._call_model("gemini-3.8-flash", [], "system prompt")
+
+        assert result == "Answer"
+        mock_cfg.assert_called_once()
+        assert mock_cfg.call_args.kwargs["max_output_tokens"] == 777
+        assert mock_cfg.call_args.kwargs["system_instruction"] == "system prompt"

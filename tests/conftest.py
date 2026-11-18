@@ -22,6 +22,8 @@ _fake_config.GEMINI_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-fl
 _fake_config.GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
 _fake_config.EMBEDDING_MODEL = "gemini-embedding-001"
 _fake_config.EMBEDDING_DIM = 3072
+_fake_config.MAX_HISTORY_CHARS = 6000
+_fake_config.MAX_OUTPUT_TOKENS = 1024
 _fake_config.logger = _logging.getLogger("config")
 sys.modules["config"] = _fake_config
 
@@ -83,6 +85,7 @@ class _PassthroughDecorator:
 class _Observer:
     def __init__(self):
         self.handlers = []
+        self.filters = []
 
     def __call__(self, *args, **kwargs):
         import inspect
@@ -98,7 +101,7 @@ class _Observer:
         pass
 
     def filter(self, *args, **kwargs):
-        pass
+        self.filters.extend(args)
 
 
 class _FakeRouter:
@@ -119,24 +122,31 @@ class _FakeRouter:
 
 
 class _FakeF:
-    def __init__(self, expr="F"):
+    def __init__(self, expr="F", evaluator=None):
         self.expr = expr
+        self._evaluator = evaluator or (lambda obj: obj)
 
     def __repr__(self):
         return self.expr
 
+    def resolve(self, obj):
+        return self._evaluator(obj)
+
     def __getattr__(self, name):
-        return _FakeF(f"{self.expr}.{name}")
+        parent = self._evaluator
+        return _FakeF(f"{self.expr}.{name}", lambda obj: getattr(parent(obj), name, None))
 
     def __call__(self, *a, **kw):
         args = ", ".join(repr(x) for x in a)
         return _FakeF(f"{self.expr}({args})")
 
     def __eq__(self, other):
-        return _FakeF(f"{self.expr} == {other!r}")
+        parent = self._evaluator
+        return _FakeF(f"{self.expr} == {other!r}", lambda obj: parent(obj) == other)
 
     def __ne__(self, other):
-        return _FakeF(f"{self.expr} != {other!r}")
+        parent = self._evaluator
+        return _FakeF(f"{self.expr} != {other!r}", lambda obj: parent(obj) != other)
 
     def in_(self, items):
         return _FakeF(f"{self.expr}.in_({items!r})")
@@ -221,7 +231,13 @@ sys.modules["aiogram.fsm.storage.memory"] = _aiogram_fsm_storage_memory
 _aiogram_enums = _types.ModuleType("aiogram.enums")
 class _ParseMode:
     HTML = "HTML"
+class _ChatType:
+    PRIVATE = "private"
+    GROUP = "group"
+    SUPERGROUP = "supergroup"
+    CHANNEL = "channel"
 _aiogram_enums.ParseMode = _ParseMode  # type: ignore
+_aiogram_enums.ChatType = _ChatType  # type: ignore
 sys.modules["aiogram.enums"] = _aiogram_enums
 
 _aiogram_client = _types.ModuleType("aiogram.client")
@@ -249,6 +265,7 @@ _services_pkg.llm = _llm_mod  # type: ignore
 _db_mod_stub = _types.ModuleType("services.db")
 _db_mod_stub.init_db = _mock.AsyncMock()  # type: ignore
 _db_mod_stub.log_dialog = _mock.AsyncMock()  # type: ignore
+_db_mod_stub.clear_user_history = _mock.AsyncMock(return_value=0)  # type: ignore
 _db_mod_stub.get_dialog_stats = _mock.AsyncMock(return_value={"total": 0, "users": 0, "today": 0})  # type: ignore
 _db_mod_stub.get_stats = _db_mod_stub.get_dialog_stats
 _db_mod_stub.upsert_user = _mock.AsyncMock()  # type: ignore
@@ -283,6 +300,7 @@ _services_pkg.db = _db_mod_stub  # type: ignore
 _rag_mod_stub = _types.ModuleType("services.rag")
 _rag_mod_stub.index_document = _mock.AsyncMock(return_value={"is_replaced": False, "chunk_count": 1})  # type: ignore
 _rag_mod_stub.search_knowledge_base = _mock.AsyncMock(return_value=[])  # type: ignore
+_rag_mod_stub.clear_query_embedding_cache = _mock.MagicMock()  # type: ignore
 sys.modules["services.rag"] = _rag_mod_stub
 _services_pkg.rag = _rag_mod_stub  # type: ignore
 

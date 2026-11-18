@@ -3,6 +3,7 @@ import io
 import logging
 import os
 import re
+from collections import OrderedDict
 from typing import Any
 
 import numpy as np
@@ -35,6 +36,12 @@ _HEADER_LABELS = frozenset({
 _TABLE_PREFIX = "[Table Row | "
 _EMBEDDING_ATTEMPTS = 3
 _EMBEDDING_RETRY_DELAY = 1.5
+QUERY_EMBEDDING_CACHE_MAX_SIZE = 128
+_query_embedding_cache: OrderedDict[tuple[str, int, str], np.ndarray] = OrderedDict()
+
+
+def clear_query_embedding_cache() -> None:
+    _query_embedding_cache.clear()
 
 
 class EmbeddingError(RuntimeError):
@@ -387,6 +394,24 @@ async def get_embedding(text: str) -> np.ndarray:
     return embeddings[0]
 
 
+async def get_query_embedding(query: str) -> np.ndarray:
+    normalized = " ".join(query.strip().split()).casefold()
+    cache_key = (EMBEDDING_MODEL, EMBEDDING_DIM, normalized)
+    cached = _query_embedding_cache.get(cache_key)
+    if cached is not None:
+        _query_embedding_cache.move_to_end(cache_key)
+        return cached
+
+    query_emb = await get_embedding(query)
+    _validate_embeddings([query_emb], 1, "Query")
+
+    _query_embedding_cache[cache_key] = query_emb
+    _query_embedding_cache.move_to_end(cache_key)
+    while len(_query_embedding_cache) > QUERY_EMBEDDING_CACHE_MAX_SIZE:
+        _query_embedding_cache.popitem(last=False)
+    return query_emb
+
+
 async def _request_embeddings(batch_texts: list[str]) -> Any:
     for attempt in range(_EMBEDDING_ATTEMPTS):
         try:
@@ -520,8 +545,7 @@ async def search_knowledge_base(
     if not chunks:
         return []
 
-    query_emb = await get_embedding(query)
-    _validate_embeddings([query_emb], 1, "Query")
+    query_emb = await get_query_embedding(query)
     q_norm = np.linalg.norm(query_emb)
     if q_norm == 0:
         return []

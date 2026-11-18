@@ -4,6 +4,7 @@ import io
 import os
 
 from aiogram import F, Router, types
+from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 
@@ -32,6 +33,8 @@ from services.rag import index_document
 from services.sheets import add_lead_to_sheet
 
 router = Router()
+router.message.filter(F.chat.type == ChatType.PRIVATE)
+router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
 _index_lock = asyncio.Lock()
 _retry_leads_lock = asyncio.Lock()
 
