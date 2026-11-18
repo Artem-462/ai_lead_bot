@@ -173,7 +173,56 @@ def clear_history(user_id: int) -> None:
     _sessions.pop(user_id, None)
 
 
-def _build_system_instruction(knowledge_data: str) -> str:
+def _clean_service_markers(text: str) -> str:
+    marker_pattern = re.compile(
+        r"^\s*(?:BASE_ANSWER|DOCUMENT_ANSWER|SOURCES)\s*(?::.*)?$", re.IGNORECASE
+    )
+    lines = text.split("\n")
+    cleaned_lines: list[str] = []
+    for line in lines:
+        if marker_pattern.match(line):
+            continue
+        line_clean = re.sub(r"(?i)\bBASE_ANSWER(?:\s*:[^\n]*)?", "", line)
+        line_clean = re.sub(r"(?i)\bDOCUMENT_ANSWER(?:\s*:[^\n]*)?", "", line_clean)
+        line_clean = re.sub(r"(?i)\bSOURCES(?:\s*:[^\n]*)?", "", line_clean)
+        cleaned_lines.append(line_clean)
+
+    result = "\n".join(cleaned_lines)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+    return result.strip()
+
+
+def _build_system_instruction(knowledge_data: str, lang: str = "uk") -> str:
+    if lang == "en":
+        button_name = "📝 Leave a request"
+        button_hint = (
+            f"To discuss your project and calculate the exact cost, guide the client politely in English:\n"
+            f'"To discuss your project and calculate the exact cost, press the \\"{button_name}\\" button below, and Artem will get in touch with you."\n'
+            f'Exact button name for English: "{button_name}".'
+        )
+        lang_style = (
+            "• STRICT LANGUAGE REQUIREMENT: You must answer EXCLUSIVELY in English. "
+            "Even if the company knowledge base and uploaded documents are in Ukrainian or Russian, "
+            "accurately translate all facts and formulate your response STRICTLY in English.\n"
+            "• ENGLISH LEVEL (A2-B1): Use clear and natural A2-B1 vocabulary and grammar. "
+            "Avoid complex terminology, passive constructions, and cumbersome sentences so that international clients easily understand.\n"
+            f'• Exact button name: always use "{button_name}" and never truncate or alter quotes.'
+        )
+    else:
+        button_name = "📝 Залишити заявку"
+        button_hint = (
+            f"Для замовлення або точного розрахунку проєкту м'яко скеровуй клієнта:\n"
+            f'«Щоб обговорити ваш проєкт і розрахувати точну вартість, натисніть кнопку '
+            f'"{button_name}" нижче, і Артем зв\'яжеться з вами.»\n'
+            f'Точна назва кнопки для української мови: "{button_name}".'
+        )
+        lang_style = (
+            "• Відповідай виключно українською мовою.\n"
+            "• Рівень англійської (A2-B1): при відповідях англійською мовою використовуй лексику та граматику рівня A2-B1. "
+            "Уникай складних термінів, пасивних конструкцій та громіздких речень, щоб текст легко сприймався міжнародними клієнтами.\n"
+            f'• Точна назва кнопки: завжди використовуй назву "{button_name}".'
+        )
+
     return f"""Ти — консультант і персональний асистент приватного розробника Артема.
 
 ТВОЄ ЗАВДАННЯ:
@@ -182,18 +231,15 @@ def _build_system_instruction(knowledge_data: str) -> str:
 
 ПРАВИЛА ТА ЕТИКА:
 1. Спілкуйся жваво, професійно і впевнено, без зайвої «води».
-2. Відповіді мають бути лаконічними, без зайвої «води» та зайвого тексту (якщо тільки клієнт сам явно не просить розгорнутої відповіді).
+2. Відповіді мають бути лаконічними, без зайвого тексту (якщо тільки клієнт сам явно не просить розгорнутої відповіді).
 3. НІКОЛИ не проси телефон, пошту або інші контакти у чаті.
-4. Для замовлення або точного розрахунку проєкту м'яко скеровуй клієнта:
-   «Щоб обговорити ваш проєкт і розрахувати точну вартість, натисніть кнопку \
-«📝 Залишити заявку» нижче, і Артем зв'яжеться з вами.»
+4. {button_hint}
 
 СУВОРЕ ПРАВИЛО ФОРМАТУВАННЯ:
 Не використовуй Markdown-теги заголовків ('###', '##') та виділення жирним через подвійні зірочки ('**'). Оформлюй пункти списків через зрозумілі емодзі (📌, 🔹, 1., 2.) та чисті абзаци з відступами. Текст має виглядати як акуратне повідомлення живої людини в Telegram.
 
 МОВА ТА СТИЛЬ ВІДПОВІДІ:
-• Відповідай тією мовою, якою пише до тебе користувач. Якщо пишуть українською — відповідай українською.
-• Рівень англійської (A2-B1): при відповідях англійською мовою використовуй лексику та граматику рівня A2-B1. Уникай складних термінів, пасивних конструкцій та громіздких речень, щоб текст легко сприймався міжнародними клієнтами (якщо тільки користувач сам не просить іншого).
+{lang_style}
 
 РОЗПОДІЛ ОБЛАСТЕЙ ЗНАНЬ:
 • ЗАГАЛЬНІ ПИТАННЯ ПРО ПОСЛУГИ, IT І БІЗНЕС:
@@ -290,7 +336,7 @@ def _build_rag_instruction(chunks: list[dict[str, Any]], lang: str, knowledge_da
         )
     context_str = "\n\n".join(context_blocks)
 
-    return f"""{_build_system_instruction(knowledge_data)}
+    return f"""{_build_system_instruction(knowledge_data, lang=lang)}
 
 ПРІОРИТЕТНІ ФАКТИ З ДОКУМЕНТІВ:
 Використовуй релевантні фрагменти нижче для точних фактів, цін, тарифів і регламентів.
@@ -313,12 +359,18 @@ def _build_rag_instruction(chunks: list[dict[str, Any]], lang: str, knowledge_da
 def _parse_answer_sources(
     reply: str, chunks: list[dict[str, Any]]
 ) -> tuple[str, list[dict[str, Any]]]:
-    first_line, _, body = reply.strip().partition("\n")
-    stripped_first = first_line.strip()
-    if stripped_first == "BASE_ANSWER" or (stripped_first.startswith("BASE_ANSWER:") and body.strip()):
-        return body.strip(), []
-    if stripped_first.startswith("DOCUMENT_ANSWER:"):
-        identifiers = stripped_first.partition(":")[2].strip()
+    raw_text = reply.strip()
+    if not raw_text:
+        return "", []
+
+    first_line = raw_text.split("\n", 1)[0].strip()
+    has_base = bool(re.search(r"(?i)\bBASE_ANSWER\b", raw_text))
+    doc_match = re.search(r"(?im)^\s*DOCUMENT_ANSWER\s*(?::\s*([^\n]*))?$", raw_text)
+
+    selected_chunks: list[dict[str, Any]] = []
+
+    if doc_match and not first_line.upper().startswith("BASE_ANSWER"):
+        identifiers = (doc_match.group(1) or "").strip()
         valid_indices: set[int] = set()
         invalid_tokens: list[str] = []
 
@@ -343,8 +395,13 @@ def _parse_answer_sources(
                 )
 
         selected_chunks = [chunk for index, chunk in enumerate(chunks, 1) if index in valid_indices]
-        return body.strip(), selected_chunks
-    return reply.strip(), chunks
+    elif has_base:
+        selected_chunks = []
+    else:
+        selected_chunks = chunks
+
+    cleaned_text = _clean_service_markers(raw_text)
+    return cleaned_text, selected_chunks
 
 
 async def get_ai_answer(user_id: int, user_text: str, lang: str = "uk") -> str:
@@ -373,7 +430,7 @@ async def get_ai_answer(user_id: int, user_text: str, lang: str = "uk") -> str:
     if chunks:
         system_instruction = _build_rag_instruction(chunks, lang, knowledge_data)
     else:
-        system_instruction = _build_system_instruction(knowledge_data)
+        system_instruction = _build_system_instruction(knowledge_data, lang=lang)
 
     max_history_chars = getattr(config, "MAX_HISTORY_CHARS", 6000)
     history = _trim_history_by_chars(raw_history, max_history_chars)
@@ -426,6 +483,7 @@ async def get_ai_answer(user_id: int, user_text: str, lang: str = "uk") -> str:
 
     reply_text = _clean_markdown(reply_text)
     reply_text, source_chunks = _parse_answer_sources(reply_text, chunks)
+    reply_text = _clean_service_markers(reply_text)
     if reply_text == "NO_RAG_ANSWER":
         return t("rag_no_answer", lang)
     if not reply_text:

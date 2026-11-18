@@ -70,7 +70,14 @@ async def cmd_docs(message: types.Message) -> None:
     for d in docs:
         safe_fn = html.escape(d["filename"])
         doc_lines.append(
-            f"• <b>{safe_fn}</b> ({d['file_type'].upper()}) — {d['chunk_count']} chunks ({d['uploaded_at'][:10]})"
+            t(
+                "doc_item",
+                lang,
+                filename=safe_fn,
+                file_type=d["file_type"].upper(),
+                chunks=d["chunk_count"],
+                date=d["uploaded_at"][:10],
+            )
         )
     await message.answer(t("doc_list_header", lang, docs="\n".join(doc_lines)))
 
@@ -160,7 +167,14 @@ async def cb_admin_docs(callback: types.CallbackQuery) -> None:
         return
 
     doc_lines = [
-        f"• <b>{html.escape(d['filename'])}</b> ({d['file_type'].upper()}) — {d['chunk_count']} chunks ({d['uploaded_at'][:10]})"
+        t(
+            "doc_item",
+            lang,
+            filename=html.escape(d["filename"]),
+            file_type=d["file_type"].upper(),
+            chunks=d["chunk_count"],
+            date=d["uploaded_at"][:10],
+        )
         for d in docs
     ]
     if callback.message:
@@ -219,7 +233,14 @@ async def cb_admin_delete_doc(callback: types.CallbackQuery) -> None:
         markup = get_admin_back_keyboard(lang)
     else:
         doc_lines = [
-            f"• <b>{html.escape(d['filename'])}</b> ({d['file_type'].upper()}) — {d['chunk_count']} chunks ({d['uploaded_at'][:10]})"
+            t(
+                "doc_item",
+                lang,
+                filename=html.escape(d["filename"]),
+                file_type=d["file_type"].upper(),
+                chunks=d["chunk_count"],
+                date=d["uploaded_at"][:10],
+            )
             for d in updated_docs
         ]
         text = t("doc_list_header", lang, docs="\n".join(doc_lines))
@@ -286,7 +307,14 @@ async def cb_admin_cancel_clear_all(callback: types.CallbackQuery) -> None:
             )
             return
         doc_lines = [
-            f"• <b>{html.escape(d['filename'])}</b> ({d['file_type'].upper()}) — {d['chunk_count']} chunks ({d['uploaded_at'][:10]})"
+            t(
+                "doc_item",
+                lang,
+                filename=html.escape(d["filename"]),
+                file_type=d["file_type"].upper(),
+                chunks=d["chunk_count"],
+                date=d["uploaded_at"][:10],
+            )
             for d in docs
         ]
         await callback.message.edit_text(

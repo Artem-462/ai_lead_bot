@@ -37,7 +37,7 @@ else:
 GEMINI_MODEL = GEMINI_MODELS[0]
 
 if not BOT_TOKEN or not GEMINI_API_KEY:
-    raise ValueError("Критичні токени не знайдені! Перевір файл .env")
+    raise ValueError("Critical tokens missing! Please check .env file")
 
 logging.basicConfig(
     level=logging.INFO,

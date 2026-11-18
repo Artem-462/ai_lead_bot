@@ -71,7 +71,7 @@ async def start_lead_form(event: types.Message | types.CallbackQuery, state: FSM
 @router.message(LeadForm.waiting_for_name, F.text, ~F.text.startswith("/"))
 async def process_name(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    lang = data.get("lang") or get_lang(message.from_user.language_code)
+    lang = data.get("lang") or await get_user_language(message.from_user.id) or get_lang(message.from_user.language_code)
 
     name = message.text.strip()
     if len(name) < 2 or len(name) > 50 or name.isdigit():
@@ -89,7 +89,7 @@ async def process_name(message: types.Message, state: FSMContext):
 @router.message(LeadForm.waiting_for_phone, F.text, ~F.text.startswith("/"))
 async def process_phone(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    lang = data.get("lang") or get_lang(message.from_user.language_code)
+    lang = data.get("lang") or await get_user_language(message.from_user.id) or get_lang(message.from_user.language_code)
 
     digits = re.sub(r'\D', '', message.text)
     if not PHONE_REGEX.match(message.text) or not (7 <= len(digits) <= 15):
@@ -104,7 +104,7 @@ async def process_phone(message: types.Message, state: FSMContext):
 @router.message(LeadForm.waiting_for_request, F.text, ~F.text.startswith("/"))
 async def process_request(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
-    lang = user_data.get("lang") or get_lang(message.from_user.language_code)
+    lang = user_data.get("lang") or await get_user_language(message.from_user.id) or get_lang(message.from_user.language_code)
     request = message.text.strip()
 
     if len(request) < 3:
@@ -155,20 +155,20 @@ async def process_request(message: types.Message, state: FSMContext):
 
         if config.ADMIN_ID:
             try:
+                admin_lang = await get_user_language(config.ADMIN_ID) or "uk"
                 username = f"@{lead.username}" if lead.username else "—"
-                admin_text = (
-                    f"🔔 <b>Нова заявка!</b>\n\n"
-                    f"👤 <b>Ім'я:</b> {html.escape(lead.name)}\n"
-                    f"📞 <b>Телефон:</b> {html.escape(lead.phone)}\n"
-                    f"📝 <b>Запит:</b> {html.escape(lead.request_text)}\n"
-                    f"✈️ <b>TG:</b> {html.escape(username)} (ID: <code>{lead.user_id}</code>)\n"
-                    f"🆔 <code>{html.escape(lead.lead_uuid)}</code>"
+                admin_text = t(
+                    "admin_notify_lead",
+                    admin_lang,
+                    name=html.escape(lead.name),
+                    phone=html.escape(lead.phone),
+                    request=html.escape(lead.request_text),
+                    username=html.escape(username),
+                    user_id=lead.user_id,
+                    lead_uuid=html.escape(lead.lead_uuid),
                 )
                 if not success:
-                    admin_text += (
-                        "\n\n⚠️ Синхронізація з Google Sheets тимчасово не вдалася. "
-                        "Заявку збережено локально."
-                    )
+                    admin_text += t("admin_notify_lead_sync_failed", admin_lang)
                 await message.bot.send_message(chat_id=config.ADMIN_ID, text=admin_text)
             except (TelegramAPIError, OSError, RuntimeError) as error:
                 config.logger.warning(
@@ -190,5 +190,5 @@ async def process_request(message: types.Message, state: FSMContext):
 @router.message(LeadForm.waiting_for_request, ~F.text)
 async def handle_non_text_in_form(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    lang = data.get("lang") or get_lang(message.from_user.language_code)
+    lang = data.get("lang") or await get_user_language(message.from_user.id) or get_lang(message.from_user.language_code)
     await message.answer(t("lead_non_text", lang), reply_markup=get_cancel_keyboard(lang))

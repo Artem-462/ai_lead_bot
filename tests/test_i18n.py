@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 
 import pytest
@@ -93,6 +94,60 @@ class TestT:
         en_keys = set(TEXTS["en"].keys())
         assert uk_keys == en_keys
 
+    def test_all_keys_have_identical_placeholders_in_uk_and_en(self):
+        placeholder_re = re.compile(r"\{([a-zA-Z0-9_]+)\}")
+        for key in TEXTS["uk"]:
+            uk_placeholders = set(placeholder_re.findall(TEXTS["uk"][key]))
+            en_placeholders = set(placeholder_re.findall(TEXTS["en"][key]))
+            assert uk_placeholders == en_placeholders, f"Placeholder mismatch in key '{key}'"
+
+    @pytest.mark.parametrize("lang,expected_title,expected_name_label", [
+        ("uk", "Нова заявка", "Ім'я"),
+        ("en", "New request", "Name"),
+    ])
+    def test_admin_lead_notification_formatting(self, lang, expected_title, expected_name_label):
+        msg = t(
+            "admin_notify_lead",
+            lang,
+            name="Alice",
+            phone="+380991234567",
+            request="CRM Bot",
+            username="@alice",
+            user_id=12345,
+            lead_uuid="uuid-1234",
+        )
+        assert expected_title in msg
+        assert expected_name_label in msg
+        assert "Alice" in msg
+        assert "+380991234567" in msg
+        assert "CRM Bot" in msg
+        assert "@alice" in msg
+        assert "12345" in msg
+        assert "uuid-1234" in msg
+
+        sync_failed = t("admin_notify_lead_sync_failed", lang)
+        assert "Google Sheets" in sync_failed
+        assert "⚠️" in sync_failed
+
+    @pytest.mark.parametrize("lang,expected_word", [
+        ("uk", "фрагментів"),
+        ("en", "chunks"),
+    ])
+    def test_doc_item_formatting(self, lang, expected_word):
+        item = t(
+            "doc_item",
+            lang,
+            filename="catalog.pdf",
+            file_type="PDF",
+            chunks=4,
+            date="2026-11-18",
+        )
+        assert "catalog.pdf" in item
+        assert "PDF" in item
+        assert "4" in item
+        assert expected_word in item
+        assert "2026-11-18" in item
+
     @pytest.mark.parametrize("lang", ["uk", "en"])
     def test_admin_keys_present(self, lang):
         admin_keys = [
@@ -116,9 +171,28 @@ class TestT:
             "admin_retry_leads_empty",
             "admin_retry_leads_running",
             "admin_retry_leads_report",
+            "admin_notify_lead",
+            "admin_notify_lead_sync_failed",
+            "doc_item",
         ]
         for key in admin_keys:
             assert key in TEXTS[lang]
-            val = t(key, lang, filename="sample.pdf", count=3, sent=2, failed=1)
+            val = t(
+                key,
+                lang,
+                filename="sample.pdf",
+                file_type="PDF",
+                date="2026-11-18",
+                chunks=3,
+                count=3,
+                sent=2,
+                failed=1,
+                name="Alice",
+                phone="+380991234567",
+                request="Test",
+                username="@alice",
+                user_id=123,
+                lead_uuid="abc-123",
+            )
             assert len(val) > 0
 

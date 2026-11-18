@@ -484,6 +484,49 @@ class TestHybridKnowledgeBase:
         ]
         assert llm.format_sources(chunks, "uk") == "price.pdf (стор. 2, 4)"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("suffix", ["", ": knowledge_base.txt", ": none"])
+    async def test_base_answer_at_end_is_stripped_and_omits_sources(self, suffix):
+        chunks = [{"content": "Ціна: $300", "filename": "price.pdf", "page_number": 2}]
+        model_reply = f"Базовий тариф — $100.\nBASE_ANSWER{suffix}"
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=chunks),
+            patch.object(llm, "_call_model", new_callable=AsyncMock, return_value=model_reply),
+        ):
+            result = await llm.get_ai_answer(123, "Який базовий тариф?", "uk")
+        assert result == "Базовий тариф — $100."
+        assert "BASE_ANSWER" not in result
+        assert "📄" not in result
+
+    @pytest.mark.asyncio
+    async def test_sources_marker_is_stripped_from_response(self):
+        chunks = [{"content": "Ціна: $300", "filename": "price.pdf", "page_number": 2}]
+        model_reply = "DOCUMENT_ANSWER: 1\nЦіна бота — $300.\nSOURCES: price.pdf (стор. 2)"
+        with (
+            patch("services.rag.search_knowledge_base", new_callable=AsyncMock, return_value=chunks),
+            patch.object(llm, "_call_model", new_callable=AsyncMock, return_value=model_reply),
+        ):
+            result = await llm.get_ai_answer(123, "Яка ціна?", "uk")
+        assert "SOURCES:" not in result
+        assert result == "Ціна бота — $300.\n\n📄 Джерело: price.pdf (стор. 2)"
+
+    def test_format_sources_english(self):
+        chunks = [
+            {"filename": "catalog.pdf", "page_number": 5},
+            {"filename": "catalog.pdf", "page_number": 3},
+        ]
+        assert llm.format_sources(chunks, "en") == "catalog.pdf (p. 3, 5)"
+
+    def test_system_prompt_localized_button_and_strict_language(self):
+        uk_prompt = llm._build_system_instruction("База", "uk")
+        assert '"📝 Залишити заявку"' in uk_prompt
+        assert "виключно українською мовою" in uk_prompt
+
+        en_prompt = llm._build_system_instruction("База", "en")
+        assert '"📝 Leave a request"' in en_prompt
+        assert "EXCLUSIVELY in English" in en_prompt
+        assert "A2-B1" in en_prompt
+
 
 class TestContextualSearchAndTokenLimits:
     @pytest.fixture(autouse=True)

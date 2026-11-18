@@ -507,6 +507,48 @@ class TestProcessRequest:
         assert "&lt;script&gt;" in admin_text
         assert "&lt; 500$" in admin_text
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("admin_lang,expected_title,expected_name_label", [
+        ("uk", "Нова заявка", "Ім'я:"),
+        ("en", "New request", "Name:"),
+    ])
+    async def test_admin_notification_uses_admin_language_from_db(
+        self, monkeypatch, admin_lang, expected_title, expected_name_label
+    ):
+        msg = make_message(text="Bot for sales", user_id=123, username="user_sales")
+        state = make_state(data={"lang": "uk", "name": "Maria", "phone": "+380991234567"})
+        with patch("handlers.lead_form.add_lead_to_sheet", return_value=True), \
+             patch("handlers.lead_form.get_user_language", new_callable=AsyncMock) as mock_get_lang, \
+             patch("handlers.lead_form.config") as mock_cfg:
+            mock_cfg.ADMIN_ID = 999
+            mock_get_lang.side_effect = lambda uid: admin_lang if uid == 999 else "uk"
+            await lead_handler.process_request(msg, state)
+
+        msg.bot.send_message.assert_awaited_once()
+        admin_text = msg.bot.send_message.call_args.kwargs["text"]
+        assert expected_title in admin_text
+        assert expected_name_label in admin_text
+        assert "Maria" in admin_text
+        assert "@user_sales" in admin_text
+
+    @pytest.mark.asyncio
+    async def test_admin_notification_sync_failed_in_english(self, monkeypatch):
+        msg = make_message(text="Bot for sales", user_id=123)
+        state = make_state(data={"lang": "uk", "name": "Maria", "phone": "+380991234567"})
+        with patch("handlers.lead_form.add_lead_to_sheet", side_effect=RuntimeError("Sheets down")), \
+             patch("handlers.lead_form.get_user_language", new_callable=AsyncMock) as mock_get_lang, \
+             patch("handlers.lead_form.config") as mock_cfg:
+            mock_cfg.ADMIN_ID = 999
+            mock_get_lang.side_effect = lambda uid: "en" if uid == 999 else "uk"
+            await lead_handler.process_request(msg, state)
+
+        msg.bot.send_message.assert_awaited_once()
+        admin_text = msg.bot.send_message.call_args.kwargs["text"]
+        assert "New request" in admin_text
+        assert "Name:" in admin_text
+        assert "Google Sheets" in admin_text
+        assert "saved locally" in admin_text
+
 
     async def test_persists_pending_lead_before_sending_and_marks_sent(self, lead_db, monkeypatch):
         msg = make_message(text="A Telegram bot for my shop")

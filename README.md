@@ -6,7 +6,7 @@
 [![aiogram](https://img.shields.io/badge/aiogram-3.31-009EFF?style=flat-square&logo=telegram&logoColor=white)](https://aiogram.dev)
 [![Gemini](https://img.shields.io/badge/Gemini%20Flash-Cascade%20Fallback-4285F4?style=flat-square&logo=google&logoColor=white)](https://ai.google.dev)
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy%202.0-Async%20%2B%20Alembic-D71F00?style=flat-square&logo=sqlalchemy&logoColor=white)](https://www.sqlalchemy.org)
-[![Tests](https://img.shields.io/badge/Tests-404%20passed-success?style=flat-square&logo=pytest&logoColor=white)](https://pytest.org)
+[![Tests](https://img.shields.io/badge/Tests-418%20passed-success?style=flat-square&logo=pytest&logoColor=white)](https://pytest.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
@@ -286,12 +286,12 @@ python -m ruff check .
 | File | Tests | Validated Behavior |
 |---|---:|---|
 | `tests/test_rag.py` | 110 | Batch count and dimension validation, same-model retry, embedding compatibility, LRU query embedding cache, PDF continuation headers, key-value tables, bounded table chunks, document handlers |
-| `tests/test_handlers.py` | 102 | FSM validation and command escape, authorization, HTML escaping, Lead Outbox persistence, admin `Retry Failed Leads`, 2-step RAG clear confirmation, corrupt file error handling, batch uploads |
+| `tests/test_handlers.py` | 105 | FSM validation and command escape, authorization, HTML escaping, Lead Outbox persistence, admin `Retry Failed Leads`, admin language notifications, 2-step RAG clear confirmation, corrupt file error handling, batch uploads |
 | `tests/test_db.py` | 76 | Code-First ORM schema, Alembic migrations, conversation history & `/clear` cleanup, document transactions, chunk cache, Lead Outbox queries and failed-lead retries |
-| `tests/test_llm.py` | 58 | Hybrid company/document context, contextual search queries, `MAX_HISTORY_CHARS` & `MAX_OUTPUT_TOKENS` budgets, missing facts, exact citations, generation retries and fallback |
+| `tests/test_llm.py` | 64 | Hybrid company/document context, contextual search queries, `MAX_HISTORY_CHARS` & `MAX_OUTPUT_TOKENS` budgets, missing facts, exact citations, generation retries, `BASE_ANSWER`/`SOURCES` marker stripping, fallback |
 | `tests/test_main.py` | 34 | Command routing, `/clear` history reset, private-chat filter, `SimpleEventIsolation`, FSM reset on `/start`/`/help`/`/language`/`/clear`, HTML name escaping, AI error boundary, `@dp.errors()`, inline callbacks, rate limiting |
-| `tests/test_i18n.py` | 24 | Symmetric Ukrainian/English keys, language switching, template formatting |
-| **Total** | **404** | **100% passing (offline, all external APIs mocked)** |
+| `tests/test_i18n.py` | 29 | Symmetric Ukrainian/English keys and placeholders, language switching, template formatting, admin notifications |
+| **Total** | **418** | **100% passing (offline, all external APIs mocked)** |
 
 ---
 
@@ -391,7 +391,7 @@ ai_lead_bot/
 ├── data/                       # Local SQLite storage directory
 │   └── chat_history.db
 │
-└── tests/                      # Automated test suite (404 tests)
+└── tests/                      # Automated test suite (418 tests)
     ├── conftest.py
     ├── test_db.py
     ├── test_handlers.py

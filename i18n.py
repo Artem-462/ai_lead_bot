@@ -106,6 +106,19 @@ TEXTS: dict[Language, dict[str, str]] = {
             "✅ Успішно відправлено: <b>{sent}</b>\n"
             "❌ Залишилось із помилкою: <b>{failed}</b>"
         ),
+        "admin_notify_lead": (
+            "🔔 <b>Нова заявка!</b>\n\n"
+            "👤 <b>Ім'я:</b> {name}\n"
+            "📞 <b>Телефон:</b> {phone}\n"
+            "📝 <b>Запит:</b> {request}\n"
+            "✈️ <b>TG:</b> {username} (ID: <code>{user_id}</code>)\n"
+            "🆔 <code>{lead_uuid}</code>"
+        ),
+        "admin_notify_lead_sync_failed": (
+            "\n\n⚠️ Синхронізація з Google Sheets тимчасово не вдалася. "
+            "Заявку збережено локально."
+        ),
+        "doc_item": "• <b>{filename}</b> ({file_type}) — фрагментів: {chunks} ({date})",
     },
     "en": {
         "welcome": (
@@ -199,7 +212,7 @@ TEXTS: dict[Language, dict[str, str]] = {
             "All uploaded documents and their chunks will be permanently deleted."
         ),
         "admin_clear_all_cancelled": "Database clearing cancelled.",
-        "doc_all_cleared": "🗑 All documents ({count}) deleted! Bot switched to Lite mode.",
+        "doc_all_cleared": "🗑 All documents ({count}) deleted! Bot switched to basic mode.",
         "admin_del_btn": "🗑 {filename}",
         "admin_retry_leads_empty": "✅ There are no failed leads to retry.",
         "admin_retry_leads_running": "⏳ Retrying failed leads ({count})...",
@@ -208,6 +221,19 @@ TEXTS: dict[Language, dict[str, str]] = {
             "✅ Sent successfully: <b>{sent}</b>\n"
             "❌ Still failed: <b>{failed}</b>"
         ),
+        "admin_notify_lead": (
+            "🔔 <b>New request!</b>\n\n"
+            "👤 <b>Name:</b> {name}\n"
+            "📞 <b>Phone:</b> {phone}\n"
+            "📝 <b>Request:</b> {request}\n"
+            "✈️ <b>TG:</b> {username} (ID: <code>{user_id}</code>)\n"
+            "🆔 <code>{lead_uuid}</code>"
+        ),
+        "admin_notify_lead_sync_failed": (
+            "\n\n⚠️ Synchronization with Google Sheets temporarily failed. "
+            "The request was saved locally."
+        ),
+        "doc_item": "• <b>{filename}</b> ({file_type}) — {chunks} chunks ({date})",
     },
 }
 

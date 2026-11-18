@@ -7,6 +7,7 @@ from aiogram.types import Message
 
 import config
 from i18n import get_lang, t
+from services.db import get_user_language
 
 TTL_SECONDS = 120
 CLEANUP_INTERVAL_SECONDS = 300
@@ -44,7 +45,7 @@ class AntiSpamMiddleware(BaseMiddleware):
         if user_id in self.users_time and (now - self.users_time[user_id]) < self.limit_seconds:
             last_warn = self.warned_time.get(user_id, 0.0)
             if now - last_warn > 30:
-                lang = get_lang(event.from_user.language_code)
+                lang = await get_user_language(user_id) or get_lang(event.from_user.language_code)
                 await event.answer(t("antispam_warn", lang))
                 self.warned_time[user_id] = now
             return
