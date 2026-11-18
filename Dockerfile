@@ -25,5 +25,9 @@ RUN adduser --disabled-password --gecos "" botuser \
     && chown -R botuser:botuser /app
 USER botuser
 
+# Verify config, core imports, and writable data directory
+HEALTHCHECK --interval=60s --timeout=15s --start-period=20s --retries=3 \
+    CMD python -c "import os, tempfile, config, main, services.db, services.rag; assert os.path.isdir('data'); tempfile.TemporaryFile(dir='data').close()"
+
 # ── Runtime ───────────────────────────────────────────────────────────────────
 CMD ["python", "main.py"]

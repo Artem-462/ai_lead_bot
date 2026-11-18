@@ -6,13 +6,13 @@
 [![aiogram](https://img.shields.io/badge/aiogram-3.31-009EFF?style=flat-square&logo=telegram&logoColor=white)](https://aiogram.dev)
 [![Gemini](https://img.shields.io/badge/Gemini%20Flash-Cascade%20Fallback-4285F4?style=flat-square&logo=google&logoColor=white)](https://ai.google.dev)
 [![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy%202.0-Async%20%2B%20Alembic-D71F00?style=flat-square&logo=sqlalchemy&logoColor=white)](https://www.sqlalchemy.org)
-[![Tests](https://img.shields.io/badge/Tests-368%20passed-success?style=flat-square&logo=pytest&logoColor=white)](https://pytest.org)
+[![Tests](https://img.shields.io/badge/Tests-404%20passed-success?style=flat-square&logo=pytest&logoColor=white)](https://pytest.org)
 [![Docker](https://img.shields.io/badge/Docker-ready-2496ED?style=flat-square&logo=docker&logoColor=white)](https://docker.com)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
 An asynchronous Telegram bot designed for client consultation, automated lead intake, and document-backed question answering. Built with Python 3.11+, aiogram 3.31, Google Gemini Flash, a hybrid vector RAG pipeline, SQLAlchemy 2.0 Async + Alembic, and a transactional Lead Outbox.
 
-[Architecture](#architecture) · [Database & Lead Outbox](#database--transactional-lead-outbox) · [Hybrid Knowledge Base](#hybrid-knowledge-base) · [RAG Engine](#vector-rag-engine) · [Features](#features) · [Quick Start](#quick-start) · [Testing](#testing--verification) · [Docker](#docker-deployment) · [Configuration](#configuration)
+[Demo & Screenshots](#demo--screenshots) · [Architecture](#architecture) · [Database & Lead Outbox](#database--transactional-lead-outbox) · [Hybrid Knowledge Base](#hybrid-knowledge-base) · [RAG Engine](#vector-rag-engine) · [Features & Commands](#features) · [Quick Start](#quick-start) · [Testing](#testing--verification) · [Docker](#docker-deployment) · [Configuration](#configuration-reference)
 
 </div>
 
@@ -26,33 +26,38 @@ When a client asks about pricing, services, or technical details, the bot refere
 
 ---
 
+## Demo & Screenshots
+
+| Feature | Preview |
+|---|---|
+| **Hybrid RAG Consultation & Citations**<br>Answers grounded in `knowledge_base.txt` and uploaded PDF/DOCX documents with exact page citations. | ![Hybrid RAG Answer](docs/screenshots/rag_answer.png) |
+| **Admin Control Panel & Lead Retry**<br>Inline dashboard for usage stats, document management, two-step purge confirmation, and one-tap `Retry Failed Leads`. | ![Admin Control Panel](docs/screenshots/admin_panel.png) |
+| **Lead Qualification Form (FSM)**<br>Interactive 3-step lead intake with input validation, command escape, and transactional Google Sheets sync. | ![Lead Qualification Form](docs/screenshots/lead_form.png) |
+
+---
+
 ## Architecture
 
-The bot is designed to be fully non-blocking. Database queries, embeddings, model calls, and external Google Sheets writes run asynchronously or inside dedicated thread pools to keep the event loop responsive. Unhandled update exceptions are captured by a global `@dp.errors()` boundary.
+The bot is designed to be fully non-blocking. Private-chat routers and `SimpleEventIsolation` serialize concurrent updates per user, while database queries, embeddings (backed by an in-memory LRU query cache), model calls, and external Google Sheets writes run asynchronously or inside dedicated thread pools to keep the event loop responsive. Unhandled update exceptions are captured by a global `@dp.errors()` boundary.
 
 ```mermaid
 flowchart TD
-    Client["Telegram Client"] --> Dispatcher["aiogram Dispatcher + @dp.errors()"]
-    Dispatcher --> AntiSpam["AntiSpam Middleware: 2s rate limit and Admin bypass"]
-    AntiSpam --> Routers["Routers and Handlers: 100% InlineKeyboardMarkup"]
+    User["Telegram User"] --> Bot["aiogram 3 (Private Filter + SimpleEventIsolation)"]
+    Bot --> ErrorBoundary["Global @dp.errors() + AntiSpam Middleware (2s limit, Admin bypass)"]
 
-    Routers --> MainH["main.py: start, language, help, navigation, chat"]
-    Routers --> LeadH["lead_form.py: 3-step FSM with command escape"]
-    Routers --> AdminH["admin.py: admin panel, stats, docs, 2-step clear, batch intake"]
+    ErrorBoundary --> MainH["Consultation Router (/start, /clear, /help, /language, chat)"]
+    ErrorBoundary --> LeadH["Lead FSM Router (3-step qualification + command escape)"]
+    ErrorBoundary --> AdminH["Admin Router (/admin, /stats, /docs, batch upload, Retry Failed Leads)"]
 
-    MainH --> FlatKB["knowledge_base.txt: always-loaded company context"]
-    MainH --> RouteDecision["DB has documents?"]
-    RouteDecision -->|"Yes: additional document facts"| VectorRAG["Vector RAG: compatible embeddings only"]
-    FlatKB --> Gemini["Gemini Cascade: 3.8-flash, 2.5-flash, flash-latest"]
-    VectorRAG --> Gemini
+    MainH --> HybridRAG["Hybrid RAG (SQLite + LRU Query Cache)"]
+    HybridRAG --> Gemini["Gemini 2.5 Flash Cascade (MAX_HISTORY_CHARS + MAX_OUTPUT_TOKENS)"]
 
-    LeadH -->|"1. Persist pending lead (outbox)"| DB["SQLAlchemy 2.0 Async + Alembic"]
-    LeadH -->|"2. Sync with 10s timeout"| GSheets["Google Sheets: gspread client"]
-    AdminH --> BatchLock["asyncio.Lock: sequential batch ingestion queue"]
-    BatchLock --> DB
-    MainH --> DB
-    VectorRAG --> DB
-    DB --> Storage[("SQLite DB: persistent chat_history.db")]
+    LeadH --> Outbox["Lead Outbox (SQLite -> Google Sheets)"]
+    AdminH -->|"Retry Failed Leads"| Outbox
+    AdminH -->|"asyncio.Lock sequential queue"| DB[("SQLite DB (SQLAlchemy 2.0 Async + Alembic)")]
+    HybridRAG --> DB
+    Outbox --> DB
+    Outbox -->|"gspread (10s timeout)"| GSheets["Google Sheets"]
 ```
 
 ### Database & Transactional Lead Outbox
@@ -61,7 +66,7 @@ Persistence is managed with **SQLAlchemy 2.0 Async** (`aiosqlite`) and **Alembic
 
 - **Automatic migrations:** `init_db()` runs Alembic upgrades (`alembic/versions/0001_code_first.py`) on startup and configures every SQLite connection with `PRAGMA journal_mode=WAL` and `PRAGMA foreign_keys=ON`.
 - **Lead Outbox reliability:** Starting the lead form generates an idempotent `lead_uuid`. On submission, the lead is committed locally to the `leads` table (`status='pending'`) before calling Google Sheets.
-- **Fault isolation:** Google Sheets exports run in a thread pool under a 10-second timeout. On success, the lead transitions to `sent` (`sent_at` recorded); on timeout or API error, it is marked `failed` with `attempts` and `last_error`, the client still gets confirmation, and the admin alert flags that the lead is safely stored locally for retry (`get_pending_leads()`).
+- **Fault isolation & Admin Retry:** Google Sheets exports run in a thread pool under a 10-second timeout. On success, the lead transitions to `sent` (`sent_at` recorded); on timeout or API error, it is marked `failed` with `attempts` and `last_error`, the client still gets confirmation, and the admin alert flags that the lead is safely stored locally. Administrators can re-sync failed leads directly from the inline Admin Panel via the **Retry Failed Leads** (`admin:retry_leads`) button, guarded by an `asyncio.Lock` to prevent duplicate exports.
 
 ### Hybrid Knowledge Base
 
@@ -158,15 +163,30 @@ The prompt separates general consultation from exact factual claims:
 
 ## Features
 
-- **Hybrid Knowledge Base:** Always loads company context from `knowledge_base.txt`, supplements it with relevant document facts, and preserves exact citations without disabling general consultation.
+- **Hybrid Knowledge Base & LRU Query Cache:** Always loads company context from `knowledge_base.txt`, supplements it with relevant document facts, caches up to 128 recent query embeddings in an LRU cache (auto-invalidated on document mutations), and preserves exact citations without disabling general consultation.
 - **Batch Document Ingestion via Telegram:** Administrators can upload single or batch `.pdf` and `.docx` files simultaneously. An asynchronous ingestion queue (`asyncio.Lock`) serializes parsing, chunking, and embedding generation to avoid event-loop blocking and SQLite write conflicts. Re-uploading an existing filename replaces chunks automatically (`ON DELETE CASCADE`).
-- **Resilient Model Cascade:** The bot executes an automatic 3-tier fallback chain (`gemini-3.8-flash` -> `gemini-2.5-flash` -> `gemini-flash-latest`) with a 1.5-second retry on 503 (Overloaded) or 429 (Rate Limit) errors.
-- **Dialogue Memory:** Maintains the last 8 message exchanges per user session to support natural follow-up questions.
-- **Lead Intake Pipeline & Outbox:** A 3-step conversation state machine validates client name, phone number (via regex `^\+?[0-9\s\-\(\)]{7,20}$`), and project details, persists leads locally via SQLAlchemy outbox before syncing to Google Sheets, and notifies the admin. Commands `/start`, `/cancel`, `/help`, and `/language` cleanly exit the FSM from any step.
+- **Resilient Model Cascade & Token Budgets:** The bot executes an automatic 3-tier fallback chain (`gemini-3.8-flash` -> `gemini-2.5-flash` -> `gemini-flash-latest`) with a 1.5-second retry on 503 (Overloaded) or 429 (Rate Limit) errors, while enforcing configurable `MAX_HISTORY_CHARS` and `MAX_OUTPUT_TOKENS` limits.
+- **Dialogue Memory & Context Reset (`/clear`):** Maintains up to 8 message exchanges per user (trimmed to `MAX_HISTORY_CHARS`) for contextual follow-up queries. Users can run `/clear` at any time to wipe both in-memory context and stored dialogue history and start fresh.
+- **Lead Intake Pipeline, Outbox & Admin Retry:** A 3-step conversation state machine validates client name, phone number (via regex `^\+?[0-9\s\-\(\)]{7,20}$`), and project details, persists leads locally via SQLAlchemy outbox before syncing to Google Sheets, and notifies the admin. Commands `/start`, `/clear`, `/cancel`, `/help`, and `/language` cleanly exit the FSM from any step. Failed syncs can be retried in one tap via the **Retry Failed Leads** button in the Admin Panel.
+- **Private-Chat Isolation & Concurrency Safety:** Routers enforce `ChatType.PRIVATE` filtering, and aiogram's `SimpleEventIsolation` prevents race conditions when a user sends overlapping updates.
 - **Bilingual Interface:** Supports Ukrainian (`uk`) and English (`en`). User preferences are stored in SQLite. English prompts are tuned for international readability (A2-B1 vocabulary).
 - **Anti-Spam Throttling with Admin Exemption:** Sliding-window rate limiter prevents user message flooding (2-second interval) with periodic in-memory cleanup, while bypassing restrictions for `ADMIN_ID` during administration and batch file uploads.
-- **Admin Control Panel & Statistics:** Authorized admins (`ADMIN_ID`) get an inline control panel (`⚙️ Адмін-панель` / `/admin`) for one-tap statistics review, knowledge base inspection, document removal, batch intake, and two-step confirmed database purge (`admin:clear_all_docs` -> `admin:confirm_clear_all` / `admin:cancel_clear_all`), alongside `/stats`, `/docs`, and `/del_doc` commands.
+- **Admin Control Panel & Statistics:** Authorized admins (`ADMIN_ID`) get an inline control panel (`⚙️ Адмін-панель` / `/admin`) for one-tap statistics review, knowledge base inspection, document removal, batch intake, **Retry Failed Leads** (`admin:retry_leads`) for unsynced outbox records, and two-step confirmed database purge (`admin:clear_all_docs` -> `admin:confirm_clear_all` / `admin:cancel_clear_all`), alongside `/stats`, `/docs`, and `/del_doc` commands.
 - **Error Boundaries & Safe HTML Rendering:** Corrupted PDF/DOCX uploads (`BadZipFile`, broken PDFs) and embedding/LLM API failures always replace or remove temporary status messages ("Indexing…" / "Thinking…"), uncaught update errors are logged with tracebacks by `@dp.errors()`, and all user names, lead fields, and filenames are escaped with `html.escape()`.
+
+### Bot Commands
+
+| Command | Access | Description |
+|---|---|---|
+| `/start` | User | Greet the user, select language (if first visit), reset any active FSM state, and open the inline menu |
+| `/clear` | User | Reset the user's conversation context (clears both in-memory LLM session and SQLite dialogue history) |
+| `/help` | User | Show usage instructions and return to the main inline menu |
+| `/language` | User | Switch interface and response language (`uk` / `en`) |
+| `/cancel` | User | Cancel an active lead qualification form |
+| `/admin` | Admin | Open the inline Admin Panel (Statistics, Documents, Upload hint, and **Retry Failed Leads** when failed outbox records exist) |
+| `/stats` | Admin | Display total users, dialogues, leads, and document counters |
+| `/docs` | Admin | List indexed PDF/DOCX documents with chunk counts and upload dates |
+| `/del_doc <filename>` | Admin | Delete an indexed document and its vector chunks by filename |
 
 ---
 
@@ -229,9 +249,11 @@ BOT_TOKEN=123456789:ABCDefghIJKlmnoPQRstuvwxYZ
 GEMINI_API_KEY=AIzaSyYourGeminiApiKeyHere
 ADMIN_ID=987654321
 GOOGLE_SHEET_NAME=Leads
-GEMINI_MODELS=gemini-3.8-flash,gemini-2.5-flash,gemini-flash-latest
+GEMINI_MODELS=gemini-2.5-flash,gemini-3.8-flash,gemini-flash-latest
 EMBEDDING_MODEL=gemini-embedding-001
 EMBEDDING_DIM=3072
+MAX_HISTORY_CHARS=6000
+MAX_OUTPUT_TOKENS=1024
 ```
 
 Place your Google Cloud Service Account JSON inside `credentials.json`. Share your target Google Sheet with the `client_email` specified in your service account credentials.
@@ -263,13 +285,13 @@ python -m ruff check .
 
 | File | Tests | Validated Behavior |
 |---|---:|---|
-| `tests/test_rag.py` | 101 | Batch count and dimension validation, same-model retry, embedding compatibility, PDF continuation headers, key-value tables, bounded table chunks, document handlers |
-| `tests/test_handlers.py` | 94 | FSM validation and command escape, authorization, HTML escaping, Lead Outbox persistence, 2-step RAG clear confirmation, corrupt file error handling, batch uploads |
-| `tests/test_db.py` | 74 | Code-First ORM schema, Alembic migrations, conversation history, document transactions, chunk cache, Lead Outbox queries |
-| `tests/test_llm.py` | 50 | Hybrid company/document context, missing facts, exact citations, generation retries and fallback, dialogue history |
-| `tests/test_main.py` | 25 | Command routing, FSM reset on `/start`/`/help`/`/language`, HTML name escaping, AI error boundary, `@dp.errors()`, inline callbacks, rate limiting |
+| `tests/test_rag.py` | 110 | Batch count and dimension validation, same-model retry, embedding compatibility, LRU query embedding cache, PDF continuation headers, key-value tables, bounded table chunks, document handlers |
+| `tests/test_handlers.py` | 102 | FSM validation and command escape, authorization, HTML escaping, Lead Outbox persistence, admin `Retry Failed Leads`, 2-step RAG clear confirmation, corrupt file error handling, batch uploads |
+| `tests/test_db.py` | 76 | Code-First ORM schema, Alembic migrations, conversation history & `/clear` cleanup, document transactions, chunk cache, Lead Outbox queries and failed-lead retries |
+| `tests/test_llm.py` | 58 | Hybrid company/document context, contextual search queries, `MAX_HISTORY_CHARS` & `MAX_OUTPUT_TOKENS` budgets, missing facts, exact citations, generation retries and fallback |
+| `tests/test_main.py` | 34 | Command routing, `/clear` history reset, private-chat filter, `SimpleEventIsolation`, FSM reset on `/start`/`/help`/`/language`/`/clear`, HTML name escaping, AI error boundary, `@dp.errors()`, inline callbacks, rate limiting |
 | `tests/test_i18n.py` | 24 | Symmetric Ukrainian/English keys, language switching, template formatting |
-| **Total** | **368** | **100% passing (offline, all external APIs mocked)** |
+| **Total** | **404** | **100% passing (offline, all external APIs mocked)** |
 
 ---
 
@@ -307,6 +329,9 @@ docker compose down
 
 SQLite files and indexed embeddings are preserved in the persistent volume mapped to `/app/data/`.
 
+- **Log rotation:** `docker-compose.yml` configures Docker's `json-file` logging driver with `max-size: "10m"` and `max-file: "3"` to cap disk usage on long-running servers.
+- **Healthcheck:** `Dockerfile` defines a `HEALTHCHECK` that validates application configuration, core module imports, and write access to `/app/data`.
+
 ---
 
 ## Configuration Reference
@@ -315,11 +340,13 @@ SQLite files and indexed embeddings are preserved in the persistent volume mappe
 |---|---|---|---|
 | `BOT_TOKEN` | string | Yes | Telegram Bot API token |
 | `GEMINI_API_KEY` | string | Yes | Google AI Studio access key |
-| `ADMIN_ID` | integer | No | Telegram ID allowed to execute `/stats`, `/docs`, `/del_doc` |
+| `ADMIN_ID` | integer | No | Telegram ID allowed to execute `/admin`, `/stats`, `/docs`, `/del_doc`, and retry failed leads |
 | `GOOGLE_SHEET_NAME` | string | No | Google Sheet worksheet title (default: `Leads`) |
 | `GEMINI_MODELS` | string | No | Comma-separated list of Gemini model names in order of priority |
 | `EMBEDDING_MODEL` | string | No | Single model for the vector index (default: `gemini-embedding-001`); changes require reindexing |
 | `EMBEDDING_DIM` | integer | No | Requested and validated vector dimension (default: `3072`); changes require reindexing |
+| `MAX_HISTORY_CHARS` | integer | No | Maximum total characters retained in per-user conversation history sent to Gemini (default: `6000`) |
+| `MAX_OUTPUT_TOKENS` | integer | No | Maximum output tokens generated per Gemini response (default: `1024`) |
 
 ---
 
@@ -327,32 +354,35 @@ SQLite files and indexed embeddings are preserved in the persistent volume mappe
 
 ```text
 ai_lead_bot/
-├── main.py                     # Entry point, routers, FSM command escape, and @dp.errors()
-├── config.py                   # Environment validation and logging setup
+├── main.py                     # Entry point, private-chat filter, SimpleEventIsolation, /clear, @dp.errors()
+├── config.py                   # Environment validation (incl. token limits) and logging setup
 ├── i18n.py                     # Localization strings and helper functions
-├── keyboards.py                # InlineKeyboardMarkup builders (incl. 2-step clear confirm)
+├── keyboards.py                # InlineKeyboardMarkup builders (incl. 2-step clear & Retry Failed Leads)
 ├── knowledge_base.txt          # Always-loaded company context with hot-reload
 ├── alembic.ini                 # Alembic migration configuration
 ├── requirements.txt            # Runtime dependencies
 ├── requirements-dev.txt        # Development and testing dependencies
 ├── pytest.ini                  # Pytest configuration
-├── Dockerfile                  # Slim single-stage container build (non-root user)
-├── docker-compose.yml          # Container configuration and persistent volume
+├── Dockerfile                  # Slim single-stage container build (non-root user + HEALTHCHECK)
+├── docker-compose.yml          # Container configuration, JSON log rotation, and persistent volume
 │
 ├── alembic/
 │   ├── env.py                  # Async Alembic environment bound to services.models.Base
 │   └── versions/
 │       └── 0001_code_first.py  # Initial Code-First schema and legacy upgrade migration
 │
+├── docs/
+│   └── screenshots/            # UI demo screenshots (rag_answer.png, admin_panel.png, lead_form.png)
+│
 ├── handlers/
-│   ├── admin.py                # /admin, /stats, /docs, /del_doc, 2-step clear, safe file intake
+│   ├── admin.py                # /admin, /stats, /docs, /del_doc, Retry Failed Leads, 2-step clear, batch intake
 │   └── lead_form.py            # 3-step lead qualification FSM with Lead Outbox sync
 │
 ├── services/
 │   ├── models.py               # SQLAlchemy 2.0 ORM models (User, History, Document, Chunk, Lead)
 │   ├── db.py                   # Async SQLAlchemy 2.0 DB layer, Alembic init, and Lead Outbox
-│   ├── llm.py                  # Hybrid context, citations, Gemini cascade, and retries
-│   ├── rag.py                  # Vector indexing, cross-page tables, and cosine search
+│   ├── llm.py                  # Hybrid context, token budgets, citations, Gemini cascade, and retries
+│   ├── rag.py                  # Vector indexing, LRU query cache, cross-page tables, and cosine search
 │   └── sheets.py               # Timeout-guarded Google Sheets append integration
 │
 ├── middlewares/
@@ -361,7 +391,7 @@ ai_lead_bot/
 ├── data/                       # Local SQLite storage directory
 │   └── chat_history.db
 │
-└── tests/                      # Automated test suite (368 tests)
+└── tests/                      # Automated test suite (404 tests)
     ├── conftest.py
     ├── test_db.py
     ├── test_handlers.py

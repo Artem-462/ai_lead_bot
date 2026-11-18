@@ -19,6 +19,12 @@ services:
       # Comment out if you prefer to bake it into the image.
       - ./knowledge_base.txt:/app/knowledge_base.txt:ro
 
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     # Resource limits — tune for your VPS
     deploy:
       resources:
