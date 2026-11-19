@@ -369,17 +369,33 @@ async def get_pending_leads(limit: int = 20) -> list[Lead]:
         return list(await session.scalars(statement))
 
 
-async def get_failed_leads(limit: int | None = None) -> list[Lead]:
+async def get_failed_leads(limit: int | None = None, max_attempts: int | None = None) -> list[Lead]:
     if limit is not None and limit <= 0:
         return []
-    statement = select(Lead).where(Lead.status == "failed").order_by(Lead.created_at, Lead.id)
+    statement = select(Lead).where(Lead.status == "failed")
+    if max_attempts is not None:
+        statement = statement.where(Lead.attempts < max_attempts)
+    statement = statement.order_by(Lead.created_at, Lead.id)
     if limit is not None:
         statement = statement.limit(limit)
     async with async_session() as session:
         return list(await session.scalars(statement))
 
 
-async def count_failed_leads() -> int:
+async def count_failed_leads(max_attempts: int | None = None) -> int:
     statement = select(func.count(Lead.id)).where(Lead.status == "failed")
+    if max_attempts is not None:
+        statement = statement.where(Lead.attempts < max_attempts)
+    async with async_session() as session:
+        return int((await session.scalar(statement)) or 0)
+
+
+async def count_user_messages_today(user_id: int) -> int:
+    today_start = utc_now().replace(hour=0, minute=0, second=0, microsecond=0)
+    statement = select(func.count(History.id)).where(
+        History.user_id == user_id,
+        History.role == "user",
+        History.timestamp >= today_start,
+    )
     async with async_session() as session:
         return int((await session.scalar(statement)) or 0)

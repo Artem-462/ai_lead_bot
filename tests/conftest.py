@@ -17,13 +17,16 @@ _fake_config.BOT_TOKEN = "test-token"
 _fake_config.GEMINI_API_KEY = "test-gemini-key"
 _fake_config.ADMIN_ID = 999
 _fake_config.GOOGLE_SHEET_NAME = "Leads"
-_fake_config.GEMINI_MODEL = "gemini-3.8-flash"
-_fake_config.GEMINI_MODELS = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-flash-latest"]
-_fake_config.GEMINI_FALLBACK_MODEL = "gemini-2.5-flash"
+_fake_config.GEMINI_MODEL = "gemini-2.5-flash"
+_fake_config.GEMINI_MODELS = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-flash-latest"]
+_fake_config.GEMINI_FALLBACK_MODEL = "gemini-3.8-flash"
 _fake_config.EMBEDDING_MODEL = "gemini-embedding-001"
 _fake_config.EMBEDDING_DIM = 3072
 _fake_config.MAX_HISTORY_CHARS = 6000
 _fake_config.MAX_OUTPUT_TOKENS = 1024
+_fake_config.OUTBOX_RETRY_INTERVAL_SEC = 300
+_fake_config.OUTBOX_MAX_ATTEMPTS = 5
+_fake_config.DAILY_USER_MESSAGE_LIMIT = 30
 _fake_config.logger = _logging.getLogger("config")
 sys.modules["config"] = _fake_config
 
@@ -111,7 +114,11 @@ class _FakeRouter:
         self.errors = _Observer()
         self.sub_routers = []
         self.events_isolation = kwargs.get("events_isolation")
-        self.fsm = _types.SimpleNamespace(events_isolation=self.events_isolation)
+        self.storage = kwargs.get("storage")
+        self.fsm = _types.SimpleNamespace(
+            events_isolation=self.events_isolation,
+            storage=self.storage,
+        )
         self.start_polling = _mock.AsyncMock()
 
     def include_router(self, router, *a, **kw):
@@ -211,7 +218,14 @@ sys.modules["aiogram.fsm.context"] = _aiogram_fsm_ctx
 
 _aiogram_fsm_state = _types.ModuleType("aiogram.fsm.state")
 _aiogram_fsm_state.StatesGroup = object  # type: ignore
-_aiogram_fsm_state.State = lambda: None  # type: ignore
+
+
+class _State:
+    def __init__(self, state: str | None = None):
+        self.state = state
+
+
+_aiogram_fsm_state.State = _State  # type: ignore
 sys.modules["aiogram.fsm.state"] = _aiogram_fsm_state
 
 
@@ -220,13 +234,54 @@ class _SimpleEventIsolation:
         pass
 
 
+class _StorageKey:
+    def __init__(self, bot_id: int, chat_id: int, user_id: int, thread_id: int | None = None, destiny: str = "default"):
+        self.bot_id = bot_id
+        self.chat_id = chat_id
+        self.user_id = user_id
+        self.thread_id = thread_id
+        self.destiny = destiny
+
+
+class _BaseStorage:
+    async def set_state(self, key, state=None):
+        raise NotImplementedError
+
+    async def get_state(self, key):
+        raise NotImplementedError
+
+    async def set_data(self, key, data):
+        raise NotImplementedError
+
+    async def get_data(self, key):
+        raise NotImplementedError
+
+    async def update_data(self, key, data):
+        current_data = await self.get_data(key=key)
+        current_data.update(data)
+        await self.set_data(key=key, data=current_data)
+        return current_data.copy()
+
+    async def close(self):
+        pass
+
+
 _aiogram_fsm_storage = _types.ModuleType("aiogram.fsm.storage")
 _aiogram_fsm_storage_memory = _types.ModuleType("aiogram.fsm.storage.memory")
 _aiogram_fsm_storage_memory.SimpleEventIsolation = _SimpleEventIsolation  # type: ignore
 _aiogram_fsm_storage.memory = _aiogram_fsm_storage_memory  # type: ignore
+
+_aiogram_fsm_storage_base = _types.ModuleType("aiogram.fsm.storage.base")
+_aiogram_fsm_storage_base.BaseStorage = _BaseStorage  # type: ignore
+_aiogram_fsm_storage_base.StorageKey = _StorageKey  # type: ignore
+_aiogram_fsm_storage_base.StateType = object  # type: ignore
+_aiogram_fsm_storage_base.DEFAULT_DESTINY = "default"  # type: ignore
+_aiogram_fsm_storage.base = _aiogram_fsm_storage_base  # type: ignore
+
 _aiogram_fsm.storage = _aiogram_fsm_storage  # type: ignore
 sys.modules["aiogram.fsm.storage"] = _aiogram_fsm_storage
 sys.modules["aiogram.fsm.storage.memory"] = _aiogram_fsm_storage_memory
+sys.modules["aiogram.fsm.storage.base"] = _aiogram_fsm_storage_base
 
 _aiogram_enums = _types.ModuleType("aiogram.enums")
 class _ParseMode:
@@ -294,6 +349,7 @@ _db_mod_stub.mark_lead_failed = _mock.AsyncMock()  # type: ignore
 _db_mod_stub.get_pending_leads = _mock.AsyncMock(return_value=[])  # type: ignore
 _db_mod_stub.get_failed_leads = _mock.AsyncMock(return_value=[])  # type: ignore
 _db_mod_stub.count_failed_leads = _mock.AsyncMock(return_value=0)  # type: ignore
+_db_mod_stub.count_user_messages_today = _mock.AsyncMock(return_value=0)  # type: ignore
 sys.modules["services.db"] = _db_mod_stub
 _services_pkg.db = _db_mod_stub  # type: ignore
 

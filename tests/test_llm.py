@@ -115,7 +115,7 @@ class TestGetAiAnswer:
             assert ans == "Hello, I can help you build a bot."
             mock_call.assert_awaited_once()
             # Verify primary model was used
-            assert mock_call.call_args[0][0] == "gemini-3.8-flash"
+            assert mock_call.call_args[0][0] == "gemini-2.5-flash"
 
     @pytest.mark.asyncio
     async def test_retry_success_on_second_attempt(self):
@@ -128,8 +128,8 @@ class TestGetAiAnswer:
             assert mock_call.await_count == 2
             # 1st model: attempt 1 failed, 1 retry after 1.5s
             mock_sleep.assert_awaited_once_with(1.5)
-            assert mock_call.call_args_list[0][0][0] == "gemini-3.8-flash"
-            assert mock_call.call_args_list[1][0][0] == "gemini-3.8-flash"
+            assert mock_call.call_args_list[0][0][0] == "gemini-2.5-flash"
+            assert mock_call.call_args_list[1][0][0] == "gemini-2.5-flash"
 
     @pytest.mark.asyncio
     async def test_fallback_to_second_model(self):
@@ -142,10 +142,10 @@ class TestGetAiAnswer:
             assert ans == "Success from 2nd model"
             assert mock_call.await_count == 3
             mock_sleep.assert_awaited_once_with(1.5)
-            # Verify model sequence: 2 calls to 3.8-flash, 1 call to 2.5-flash
-            assert mock_call.call_args_list[0][0][0] == "gemini-3.8-flash"
-            assert mock_call.call_args_list[1][0][0] == "gemini-3.8-flash"
-            assert mock_call.call_args_list[2][0][0] == "gemini-2.5-flash"
+            # Verify model sequence: 2 calls to 2.5-flash, 1 call to 3.8-flash
+            assert mock_call.call_args_list[0][0][0] == "gemini-2.5-flash"
+            assert mock_call.call_args_list[1][0][0] == "gemini-2.5-flash"
+            assert mock_call.call_args_list[2][0][0] == "gemini-3.8-flash"
 
     @pytest.mark.asyncio
     async def test_fallback_to_third_model(self):
@@ -209,21 +209,21 @@ class TestGetAiAnswer:
             assert ans == "Success from 2nd model"
             assert mock_call.await_count == 2
             mock_sleep.assert_not_awaited()
-            assert mock_call.call_args_list[0][0][0] == "gemini-3.8-flash"
-            assert mock_call.call_args_list[1][0][0] == "gemini-2.5-flash"
+            assert mock_call.call_args_list[0][0][0] == "gemini-2.5-flash"
+            assert mock_call.call_args_list[1][0][0] == "gemini-3.8-flash"
 
     @pytest.mark.asyncio
     async def test_model_not_found_404_fast_fallback(self):
-        err_404 = APIError(message="404 NOT_FOUND: models/gemini-3.8-flash", code=404)
+        err_404 = APIError(message="404 NOT_FOUND: models/gemini-2.5-flash", code=404)
         with patch.object(llm, "_call_model", new_callable=AsyncMock) as mock_call, \
              patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            mock_call.side_effect = [err_404, "Success from 2.5-flash"]
+            mock_call.side_effect = [err_404, "Success from 3.8-flash"]
             ans = await llm.get_ai_answer(123, "Need bot", "uk")
-            assert ans == "Success from 2.5-flash"
+            assert ans == "Success from 3.8-flash"
             assert mock_call.await_count == 2
             mock_sleep.assert_not_awaited()
-            assert mock_call.call_args_list[0][0][0] == "gemini-3.8-flash"
-            assert mock_call.call_args_list[1][0][0] == "gemini-2.5-flash"
+            assert mock_call.call_args_list[0][0][0] == "gemini-2.5-flash"
+            assert mock_call.call_args_list[1][0][0] == "gemini-3.8-flash"
 
     @pytest.mark.asyncio
     async def test_session_capacity_capped_at_500(self):

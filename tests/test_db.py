@@ -26,7 +26,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase
 
 from alembic import command
-from services.models import Base, Document, DocumentChunk, History, Lead, User, utc_now
+from services.models import (
+    Base,
+    Document,
+    DocumentChunk,
+    FSMState,
+    History,
+    Lead,
+    User,
+    utc_now,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LEGACY_SCHEMA = """
@@ -80,7 +89,7 @@ async def assert_no_schema_diff(db):
 
 
 class TestModels:
-    @pytest.mark.parametrize("model", [User, History, Document, DocumentChunk, Lead])
+    @pytest.mark.parametrize("model", [User, History, Document, DocumentChunk, Lead, FSMState])
     def test_declarative_mapping(self, model):
         assert issubclass(Base, DeclarativeBase)
         assert inspect(model).local_table is Base.metadata.tables[model.__tablename__]
@@ -89,6 +98,7 @@ class TestModels:
         (User.user_id, BigInteger), (History.user_id, BigInteger), (Lead.user_id, BigInteger),
         (History.id, Integer), (History.content, Text), (History.timestamp, DateTime),
         (Document.filename, String), (DocumentChunk.embedding, LargeBinary),
+        (FSMState.storage_key, String), (FSMState.data_json, Text), (FSMState.updated_at, DateTime),
     ])
     def test_column_types(self, column, column_type):
         assert isinstance(column.property.columns[0].type, column_type)
@@ -137,7 +147,7 @@ class TestInitDb:
             tables = await connection.run_sync(lambda connection: inspect(connection).get_table_names())
         assert set(Base.metadata.tables) | {"alembic_version"} <= set(tables)
 
-    @pytest.mark.parametrize("model", [User, History, Document, DocumentChunk, Lead])
+    @pytest.mark.parametrize("model", [User, History, Document, DocumentChunk, Lead, FSMState])
     async def test_tables_have_expected_columns(self, real_db, model):
         async with real_db.engine.connect() as connection:
             columns = await connection.run_sync(lambda connection: inspect(connection).get_columns(model.__tablename__))
@@ -162,7 +172,7 @@ class TestInitDb:
 
     async def test_new_tables_are_empty(self, real_db):
         async with real_db.async_session() as session:
-            for model in (User, History, Document, DocumentChunk, Lead):
+            for model in (User, History, Document, DocumentChunk, Lead, FSMState):
                 assert await session.scalar(select(func.count()).select_from(model)) == 0
 
     async def test_wal_and_foreign_keys_on_every_connection(self, real_db):
@@ -274,7 +284,7 @@ class TestInitDb:
         command.upgrade(config, "head")
         command.check(config)
         with closing(sqlite3.connect(tmp_db)) as connection:
-            assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0001_code_first"
+            assert connection.execute("SELECT version_num FROM alembic_version").fetchone()[0] == "0002_fsm_states"
         command.downgrade(config, "base")
         with closing(sqlite3.connect(tmp_db)) as connection:
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -286,6 +296,7 @@ class TestInitDb:
         command.upgrade(config, "head", sql=True)
         sql = config.output_buffer.getvalue()
         assert "CREATE TABLE leads" in sql
+        assert "CREATE TABLE fsm_states" in sql
         assert "ON DELETE CASCADE" in sql
 
 
@@ -632,3 +643,47 @@ class TestLeads:
         await real_db.mark_lead_sent(failed_first.id)
         assert await real_db.count_failed_leads() == 1
         assert [lead.id for lead in await real_db.get_failed_leads()] == [failed_second.id]
+
+    async def test_failed_leads_filter_by_max_attempts(self, real_db):
+        lead1 = await real_db.create_lead(10, "Lead 10", "123", "Req")
+        lead2 = await real_db.create_lead(20, "Lead 20", "456", "Req")
+        await real_db.mark_lead_failed(lead1.id, "Err 1")  # attempts = 1
+        await real_db.mark_lead_failed(lead2.id, "Err 2")
+        await real_db.mark_lead_failed(lead2.id, "Err 2")
+        await real_db.mark_lead_failed(lead2.id, "Err 2")  # attempts = 3
+
+        assert len(await real_db.get_failed_leads(max_attempts=2)) == 1
+        assert (await real_db.get_failed_leads(max_attempts=2))[0].id == lead1.id
+        assert len(await real_db.get_failed_leads(max_attempts=4)) == 2
+        assert await real_db.count_failed_leads(max_attempts=2) == 1
+        assert await real_db.count_failed_leads(max_attempts=4) == 2
+
+
+class TestUserDailyLimit:
+    async def test_count_user_messages_today_empty(self, real_db):
+        assert await real_db.count_user_messages_today(12345) == 0
+
+    async def test_count_user_messages_today_counts_only_today_and_user_role(self, real_db):
+        user_id = 98765
+        now = utc_now()
+        yesterday = now - timedelta(days=1)
+
+        async with real_db.async_session.begin() as session:
+            session.add_all([
+                # Yesterday's messages (should not be counted)
+                History(user_id=user_id, role="user", content="old user msg", timestamp=yesterday),
+                History(user_id=user_id, role="assistant", content="old bot reply", timestamp=yesterday),
+                # Today's assistant messages (should not be counted)
+                History(user_id=user_id, role="assistant", content="today bot reply", timestamp=now),
+                # Today's user messages (should be counted)
+                History(user_id=user_id, role="user", content="msg 1", timestamp=now),
+                History(user_id=user_id, role="user", content="msg 2", timestamp=now),
+                History(user_id=user_id, role="user", content="msg 3", timestamp=now),
+                # Another user's message today (should not be counted)
+                History(user_id=11111, role="user", content="other user", timestamp=now),
+            ])
+
+        count = await real_db.count_user_messages_today(user_id)
+        assert count == 3
+        assert await real_db.count_user_messages_today(11111) == 1
+        assert await real_db.count_user_messages_today(99999) == 0

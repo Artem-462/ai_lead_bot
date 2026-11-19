@@ -8,7 +8,11 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import SimpleEventIsolation
-from aiogram.types import ReplyKeyboardRemove
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 
 import config
 from handlers import admin, lead_form
@@ -17,15 +21,18 @@ from keyboards import get_language_keyboard, get_main_keyboard
 from middlewares.antispam import AntiSpamMiddleware
 from services.db import (
     clear_user_history,
+    count_user_messages_today,
     get_user_language,
     init_db,
     log_dialog,
     set_user_language,
 )
+from services.fsm_storage import SQLAlchemyStorage
 from services.llm import clear_history, get_ai_answer
+from services.outbox import OutboxWorker
 
 bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher(events_isolation=SimpleEventIsolation())
+dp = Dispatcher(storage=SQLAlchemyStorage(), events_isolation=SimpleEventIsolation())
 user_router = Router()
 user_router.message.filter(F.chat.type == ChatType.PRIVATE)
 user_router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
@@ -168,6 +175,19 @@ async def handle_user_message(message: types.Message) -> None:
         await message.answer(LANG_SELECT_MSG, reply_markup=get_language_keyboard())
         return
 
+    is_admin = bool(config.ADMIN_ID) and user_id == config.ADMIN_ID
+    limit = getattr(config, "DAILY_USER_MESSAGE_LIMIT", 30)
+    if not is_admin and limit > 0:
+        count = await count_user_messages_today(user_id)
+        if count >= limit:
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text=t("ibtn_lead", lang), callback_data="menu:lead")]
+                ]
+            )
+            await message.answer(t("daily_limit_reached", lang), reply_markup=keyboard)
+            return
+
     wait_message = await message.answer(t("thinking", lang))
     try:
         answer = await get_ai_answer(user_id, message.text, lang)
@@ -193,9 +213,14 @@ async def handle_user_message(message: types.Message) -> None:
 
 async def main() -> None:
     await init_db()
-    config.logger.info("Bot started successfully, listening for updates...")
-    await bot.delete_webhook(drop_pending_updates=False)
-    await dp.start_polling(bot)
+    worker = OutboxWorker()
+    worker.start()
+    try:
+        config.logger.info("Bot started successfully, listening for updates...")
+        await bot.delete_webhook(drop_pending_updates=False)
+        await dp.start_polling(bot)
+    finally:
+        await worker.stop()
 
 
 if __name__ == "__main__":

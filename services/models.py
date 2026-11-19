@@ -103,3 +103,14 @@ class Lead(Base):
         DateTime, default=utc_now, server_default=func.current_timestamp()
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+class FSMState(Base):
+    __tablename__ = "fsm_states"
+
+    storage_key: Mapped[str] = mapped_column(String, primary_key=True)
+    state: Mapped[str | None] = mapped_column(String, nullable=True)
+    data_json: Mapped[str] = mapped_column(Text, default="{}", server_default=text("'{}'"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utc_now, server_default=func.current_timestamp(), onupdate=utc_now
+    )

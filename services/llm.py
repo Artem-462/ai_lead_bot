@@ -441,7 +441,7 @@ async def get_ai_answer(user_id: int, user_text: str, lang: str = "uk") -> str:
     models_chain = getattr(
         config,
         "GEMINI_MODELS",
-        ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-flash-latest"],
+        ("gemini-2.5-flash", "gemini-3.8-flash", "gemini-flash-latest"),
     )
 
     reply_text: str | None = None

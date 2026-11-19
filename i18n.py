@@ -47,6 +47,11 @@ TEXTS: dict[Language, dict[str, str]] = {
         "lead_error": "❌ Не вдалося зберегти заявку. Спробуйте ще раз або напишіть пізніше.",
         "lead_non_text": "Будь ласка, введіть відповідь текстом або натисніть «Скасувати».",
         "antispam_warn": "⚠️ Не поспішайте. Зачекайте кілька секунд перед наступним повідомленням.",
+        "daily_limit_reached": (
+            "⏳ Ви досягли денного ліміту повідомлень.\n\n"
+            "Ліміт оновиться завтра. Якщо у вас є питання або пропозиція щодо співпраці, "
+            "ви можете оформити заявку через кнопку нижче! ⬇️"
+        ),
         "ibtn_ask_ai": "💬 Поставити запитання ШІ",
         "ibtn_lead": "📝 Залишити заявку",
         "ibtn_about": "💼 Про автора",
@@ -162,6 +167,11 @@ TEXTS: dict[Language, dict[str, str]] = {
         "lead_error": "❌ Failed to save your request. Please try again or come back later.",
         "lead_non_text": "Please type your answer or press the Cancel button.",
         "antispam_warn": "⚠️ Please slow down. Wait a couple of seconds.",
+        "daily_limit_reached": (
+            "⏳ You have reached the daily message limit.\n\n"
+            "The limit will reset tomorrow. If you have questions or project inquiries, "
+            "feel free to submit a request using the button below! ⬇️"
+        ),
         "ibtn_ask_ai": "💬 Ask AI Assistant",
         "ibtn_lead": "📝 Leave a request",
         "ibtn_about": "💼 About author",

@@ -21,6 +21,7 @@ if PROJECT_ROOT not in sys.path:
 import handlers.admin as admin_handler
 import handlers.lead_form as lead_handler
 import keyboards
+import services.outbox as outbox_module
 from i18n import t
 from services.models import Lead
 
@@ -1280,8 +1281,10 @@ class TestAdminPanel:
 
         for fn_name in ("get_failed_leads", "mark_lead_sent", "mark_lead_failed"):
             monkeypatch.setattr(admin_handler, fn_name, getattr(real_db, fn_name))
+            monkeypatch.setattr(outbox_module.db, fn_name, getattr(real_db, fn_name))
         sheet_mock = AsyncMock(return_value=True)
         monkeypatch.setattr(admin_handler, "add_lead_to_sheet", sheet_mock)
+        monkeypatch.setattr(outbox_module.sheets, "add_lead_to_sheet", sheet_mock)
         monkeypatch.setattr(admin_handler.config, "ADMIN_ID", 999)
 
         cb = make_callback(data="admin:retry_leads", user_id=999)
@@ -1319,8 +1322,10 @@ class TestAdminPanel:
 
         for fn_name in ("get_failed_leads", "mark_lead_sent", "mark_lead_failed"):
             monkeypatch.setattr(admin_handler, fn_name, getattr(real_db, fn_name))
+            monkeypatch.setattr(outbox_module.db, fn_name, getattr(real_db, fn_name))
         sheet_mock = AsyncMock(side_effect=[True, RuntimeError("Google Sheets 503")])
         monkeypatch.setattr(admin_handler, "add_lead_to_sheet", sheet_mock)
+        monkeypatch.setattr(outbox_module.sheets, "add_lead_to_sheet", sheet_mock)
         monkeypatch.setattr(admin_handler.config, "ADMIN_ID", 999)
 
         cb = make_callback(data="admin:retry_leads", user_id=999)
@@ -1350,7 +1355,9 @@ class TestAdminPanel:
 
         for fn_name in ("get_failed_leads", "mark_lead_sent", "mark_lead_failed"):
             monkeypatch.setattr(admin_handler, fn_name, getattr(real_db, fn_name))
+            monkeypatch.setattr(outbox_module.db, fn_name, getattr(real_db, fn_name))
         monkeypatch.setattr(admin_handler, "add_lead_to_sheet", sheets.add_lead_to_sheet)
+        monkeypatch.setattr(outbox_module.sheets, "add_lead_to_sheet", sheets.add_lead_to_sheet)
         monkeypatch.setattr(admin_handler.config, "ADMIN_ID", 999)
 
         cb = make_callback(data="admin:retry_leads", user_id=999)

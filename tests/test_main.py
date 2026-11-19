@@ -144,12 +144,68 @@ class TestMainHandlers:
         msg.answer = AsyncMock(return_value=wait_msg)
 
         with patch("main.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("main.count_user_messages_today", new_callable=AsyncMock, return_value=5), \
              patch("main.get_ai_answer", new_callable=AsyncMock, return_value="ШІ відповідь") as mock_ai, \
              patch("main.log_dialog", new_callable=AsyncMock) as mock_log:
             await main.handle_user_message(msg)
             mock_ai.assert_awaited_once_with(123, "Hello AI", "uk")
             wait_msg.edit_text.assert_awaited_once_with("ШІ відповідь", parse_mode=None)
             mock_log.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_daily_quota_reached_blocks_ai_and_offers_lead_form(self):
+        msg = make_message(text="Need more answers", user_id=123)
+        with patch("main.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("main.count_user_messages_today", new_callable=AsyncMock, return_value=30), \
+             patch("main.config.DAILY_USER_MESSAGE_LIMIT", 30), \
+             patch("main.config.ADMIN_ID", 999), \
+             patch("main.get_ai_answer", new_callable=AsyncMock) as mock_ai:
+            await main.handle_user_message(msg)
+
+        mock_ai.assert_not_awaited()
+        msg.answer.assert_awaited_once()
+        text_arg = msg.answer.call_args[0][0]
+        assert text_arg == t("daily_limit_reached", "uk")
+        markup = msg.answer.call_args.kwargs.get("reply_markup")
+        assert markup is not None
+        btn = markup.inline_keyboard[0][0]
+        assert btn.callback_data == "menu:lead"
+        assert btn.text == t("ibtn_lead", "uk")
+
+    @pytest.mark.asyncio
+    async def test_daily_quota_admin_bypasses_limit(self):
+        msg = make_message(text="Admin question", user_id=999)
+        wait_msg = MagicMock()
+        wait_msg.edit_text = AsyncMock()
+        msg.answer = AsyncMock(return_value=wait_msg)
+
+        with patch("main.get_user_language", new_callable=AsyncMock, return_value="en"), \
+             patch("main.config.ADMIN_ID", 999), \
+             patch("main.config.DAILY_USER_MESSAGE_LIMIT", 10), \
+             patch("main.count_user_messages_today", new_callable=AsyncMock, return_value=50) as mock_count, \
+             patch("main.get_ai_answer", new_callable=AsyncMock, return_value="Admin reply") as mock_ai:
+            await main.handle_user_message(msg)
+
+        mock_count.assert_not_awaited()
+        mock_ai.assert_awaited_once_with(999, "Admin question", "en")
+        wait_msg.edit_text.assert_awaited_once_with("Admin reply", parse_mode=None)
+
+    @pytest.mark.asyncio
+    async def test_daily_quota_disabled_when_zero(self):
+        msg = make_message(text="Question with zero limit", user_id=123)
+        wait_msg = MagicMock()
+        wait_msg.edit_text = AsyncMock()
+        msg.answer = AsyncMock(return_value=wait_msg)
+
+        with patch("main.get_user_language", new_callable=AsyncMock, return_value="uk"), \
+             patch("main.config.ADMIN_ID", 999), \
+             patch("main.config.DAILY_USER_MESSAGE_LIMIT", 0), \
+             patch("main.count_user_messages_today", new_callable=AsyncMock, return_value=100) as mock_count, \
+             patch("main.get_ai_answer", new_callable=AsyncMock, return_value="Reply") as mock_ai:
+            await main.handle_user_message(msg)
+
+        mock_count.assert_not_awaited()
+        mock_ai.assert_awaited_once_with(123, "Question with zero limit", "uk")
 
     async def test_log_dialog_database_error_is_reported(self):
         msg = make_message(text="Hello", user_id=123)
@@ -286,14 +342,23 @@ class TestMainHandlers:
         assert isinstance(main.dp.fsm.events_isolation, SimpleEventIsolation)
         assert isinstance(main.dp.events_isolation, SimpleEventIsolation)
 
+    def test_dispatcher_uses_sqlalchemy_storage(self):
+        from services.fsm_storage import SQLAlchemyStorage
+        assert isinstance(main.dp.storage, SQLAlchemyStorage)
+
     @pytest.mark.asyncio
     async def test_main_preserves_pending_updates_on_startup(self):
         with patch("main.init_db", new_callable=AsyncMock) as mock_init_db, \
+             patch("main.OutboxWorker") as mock_worker_cls, \
              patch.object(main.bot, "delete_webhook", new_callable=AsyncMock) as mock_delete_webhook, \
              patch.object(main.dp, "start_polling", new_callable=AsyncMock) as mock_start_polling:
+            mock_worker = mock_worker_cls.return_value
+            mock_worker.stop = AsyncMock()
             await main.main()
 
         mock_init_db.assert_awaited_once()
+        mock_worker.start.assert_called_once()
+        mock_worker.stop.assert_awaited_once()
         mock_delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
         mock_start_polling.assert_awaited_once_with(main.bot)
 

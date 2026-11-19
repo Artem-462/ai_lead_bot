@@ -21,20 +21,29 @@ MAX_OUTPUT_TOKENS: int = int(os.getenv("MAX_OUTPUT_TOKENS", "1024"))
 if MAX_HISTORY_CHARS <= 0 or MAX_OUTPUT_TOKENS <= 0:
     raise ValueError("MAX_HISTORY_CHARS and MAX_OUTPUT_TOKENS must be positive")
 
-DEFAULT_GEMINI_MODELS = [
-    "gemini-3.8-flash",
+DEFAULT_GEMINI_MODELS = (
     "gemini-2.5-flash",
+    "gemini-3.8-flash",
     "gemini-flash-latest",
-]
+)
 
 raw_models = os.getenv("GEMINI_MODELS")
 if raw_models:
     GEMINI_MODELS = [m.strip() for m in raw_models.split(",") if m.strip()]
 else:
     primary = os.getenv("GEMINI_MODEL")
-    GEMINI_MODELS = [primary] + [m for m in DEFAULT_GEMINI_MODELS if m != primary] if primary else DEFAULT_GEMINI_MODELS.copy()
+    GEMINI_MODELS = [primary] + [m for m in DEFAULT_GEMINI_MODELS if m != primary] if primary else list(DEFAULT_GEMINI_MODELS)
 
 GEMINI_MODEL = GEMINI_MODELS[0]
+
+OUTBOX_RETRY_INTERVAL_SEC: int = int(os.getenv("OUTBOX_RETRY_INTERVAL_SEC", "300"))
+OUTBOX_MAX_ATTEMPTS: int = int(os.getenv("OUTBOX_MAX_ATTEMPTS", "5"))
+if OUTBOX_RETRY_INTERVAL_SEC <= 0 or OUTBOX_MAX_ATTEMPTS <= 0:
+    raise ValueError("OUTBOX_RETRY_INTERVAL_SEC and OUTBOX_MAX_ATTEMPTS must be positive")
+
+DAILY_USER_MESSAGE_LIMIT: int = int(os.getenv("DAILY_USER_MESSAGE_LIMIT", "30"))
+if DAILY_USER_MESSAGE_LIMIT < 0:
+    raise ValueError("DAILY_USER_MESSAGE_LIMIT must be non-negative")
 
 if not BOT_TOKEN or not GEMINI_API_KEY:
     raise ValueError("Critical tokens missing! Please check .env file")

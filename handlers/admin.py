@@ -29,14 +29,23 @@ from services.db import (
     mark_lead_failed,
     mark_lead_sent,
 )
+from services.outbox import outbox_lock, retry_failed_leads
 from services.rag import index_document
 from services.sheets import add_lead_to_sheet
+
+__all__ = [
+    "add_lead_to_sheet",
+    "mark_lead_failed",
+    "mark_lead_sent",
+    "outbox_lock",
+    "retry_failed_leads",
+]
 
 router = Router()
 router.message.filter(F.chat.type == ChatType.PRIVATE)
 router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
 _index_lock = asyncio.Lock()
-_retry_leads_lock = asyncio.Lock()
+_retry_leads_lock = outbox_lock
 
 
 @router.message(Command("stats"))
@@ -332,42 +341,21 @@ async def cb_admin_retry_leads(callback: types.CallbackQuery) -> None:
         await callback.answer(t("stats_no_access", lang), show_alert=True)
         return
 
-    async with _retry_leads_lock:
-        leads = await get_failed_leads()
-        if not leads:
-            await callback.answer(t("admin_retry_leads_empty", lang))
-            if callback.message:
-                try:
-                    await callback.message.edit_text(
-                        t("admin_retry_leads_empty", lang),
-                        reply_markup=get_admin_back_keyboard(lang),
-                    )
-                except TelegramAPIError:
-                    pass
-            return
-
-        await callback.answer(t("admin_retry_leads_running", lang, count=len(leads)))
-
-        sent_count = 0
-        failed_count = 0
-        for lead in leads:
+    leads = await get_failed_leads()
+    if not leads:
+        await callback.answer(t("admin_retry_leads_empty", lang))
+        if callback.message:
             try:
-                success = await add_lead_to_sheet(
-                    lead.name, lead.phone, lead.request_text, lead_uuid=lead.lead_uuid
+                await callback.message.edit_text(
+                    t("admin_retry_leads_empty", lang),
+                    reply_markup=get_admin_back_keyboard(lang),
                 )
-                if not success:
-                    raise RuntimeError("Google Sheets did not accept the lead")
-            except Exception as error:  # noqa: BLE001 - keep lead failed on any synchronization error
-                failed_count += 1
-                await mark_lead_failed(lead.id, f"{type(error).__name__}: {error}")
-                config.logger.warning(
-                    "Failed lead retry unsuccessful (lead_uuid=%s, error=%s)",
-                    lead.lead_uuid,
-                    type(error).__name__,
-                )
-            else:
-                sent_count += 1
-                await mark_lead_sent(lead.id)
+            except TelegramAPIError:
+                pass
+        return
+
+    await callback.answer(t("admin_retry_leads_running", lang, count=len(leads)))
+    sent_count, failed_count = await retry_failed_leads(max_attempts=None)
 
     if callback.message:
         report_text = t("admin_retry_leads_report", lang, sent=sent_count, failed=failed_count)
