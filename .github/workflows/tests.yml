@@ -33,6 +33,10 @@ jobs:
       run: |
         ruff check .
 
-    - name: Run pytest
+    - name: Run unit tests
       run: |
-        python -m pytest -v
+        python -m pytest tests -v
+
+    - name: Run integration tests
+      run: |
+        python -m pytest tests_integration -v

@@ -18,8 +18,13 @@ from google.genai import errors
 from httpx import TransportError
 
 from config import EMBEDDING_DIM, EMBEDDING_MODEL
-from services.db import get_all_chunks_with_metadata, upsert_document
+from services.db import get_all_chunks_with_metadata, upsert_document  # noqa: F401
 from services.llm import client
+from services.vector_store import (
+    SQLiteNumPyVectorStore,  # noqa: F401
+    VectorStore,
+    default_vector_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +47,7 @@ _query_embedding_cache: OrderedDict[tuple[str, int, str], np.ndarray] = OrderedD
 
 def clear_query_embedding_cache() -> None:
     _query_embedding_cache.clear()
+    default_vector_store.invalidate()
 
 
 class EmbeddingError(RuntimeError):
@@ -521,28 +527,13 @@ async def search_knowledge_base(
     query: str,
     top_k: int = 4,
     min_score: float = 0.52,
+    *,
+    vector_store: VectorStore | None = None,
 ) -> list[dict[str, Any]]:
-    chunks = await get_all_chunks_with_metadata()
-    compatible_chunks = []
-    for chunk in chunks:
-        vector = chunk["embedding"]
-        if (
-            chunk.get("embedding_model") != EMBEDDING_MODEL
-            or chunk.get("embedding_dim") != EMBEDDING_DIM
-            or vector.ndim != 1
-            or vector.size != EMBEDDING_DIM
-            or not np.isfinite(vector).all()
-        ):
-            logger.warning(
-                "Skipping incompatible chunk: file=%s, chunk=%s, model=%s, dim=%s, shape=%s; "
-                "expected model=%s, dim=%d. Reindex the document.",
-                chunk["filename"], chunk.get("chunk_index"), chunk.get("embedding_model"),
-                chunk.get("embedding_dim"), vector.shape, EMBEDDING_MODEL, EMBEDDING_DIM,
-            )
-            continue
-        compatible_chunks.append(chunk)
-    chunks = compatible_chunks
-    if not chunks:
+    store = vector_store or default_vector_store
+    if hasattr(store, "ensure_loaded"):
+        await store.ensure_loaded()
+    if getattr(store, "is_empty", False):
         return []
 
     query_emb = await get_query_embedding(query)
@@ -550,30 +541,9 @@ async def search_knowledge_base(
     if q_norm == 0:
         return []
 
-    chunk_embs = np.stack([c["embedding"] for c in chunks])
-    chunk_norms = np.linalg.norm(chunk_embs, axis=1) * q_norm
-    chunk_norms[chunk_norms == 0] = 1e-9
-
-    sims = np.dot(chunk_embs, query_emb) / chunk_norms
-    results: list[dict[str, Any]] = []
-
-    for idx, sim in enumerate(sims):
-        score = float(sim)
-        if score >= min_score:
-            results.append(
-                {
-                    "content": chunks[idx]["content"],
-                    "filename": chunks[idx]["filename"],
-                    "page_number": chunks[idx]["page_number"],
-                    "score": score,
-                }
-            )
-
-    results.sort(key=lambda x: x["score"], reverse=True)
-    if not results:
-        return []
-
-    top_score = results[0]["score"]
-    cutoff = max(min_score, top_score - 0.08)
-    filtered = [r for r in results if r["score"] >= cutoff]
-    return filtered[:top_k]
+    return await store.search(
+        query_vector=query_emb,
+        top_k=top_k,
+        min_score=min_score,
+        score_window=0.08,
+    )

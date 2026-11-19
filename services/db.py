@@ -14,6 +14,7 @@ from sqlalchemy.pool import NullPool, StaticPool
 import config
 from alembic import command
 from services.models import Document, DocumentChunk, History, Lead, User, utc_now
+from services.vector_store import invalidate_vector_store_cache
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -59,6 +60,7 @@ def invalidate_chunks_cache() -> None:
     clear_cache = getattr(rag_module, "clear_query_embedding_cache", None)
     if callable(clear_cache):
         clear_cache()
+    invalidate_vector_store_cache()
 
 
 def _run_migrations(connection: Connection) -> None:

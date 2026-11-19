@@ -880,6 +880,105 @@ class TestVectorSearch:
         embed.assert_not_awaited()
 
 
+class TestVectorStoreAbstraction:
+    @pytest.mark.asyncio
+    async def test_protocol_implementation_and_caching(self):
+        from services.vector_store import SQLiteNumPyVectorStore, VectorStore
+
+        loader_calls = 0
+
+        async def mock_loader():
+            nonlocal loader_calls
+            loader_calls += 1
+            return [
+                {
+                    "content": "Doc 1 text",
+                    "filename": "doc1.pdf",
+                    "page_number": 1,
+                    "chunk_index": 0,
+                    "embedding": np.array([3.0, 4.0, 0.0], dtype=np.float32),
+                    "embedding_model": "test-model",
+                    "embedding_dim": 3,
+                }
+            ]
+
+        store = SQLiteNumPyVectorStore(
+            loader=mock_loader,
+            embedding_model="test-model",
+            embedding_dim=3,
+        )
+        assert isinstance(store, VectorStore)
+        assert store.matrix is None
+
+        query = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        results = await store.search(query, top_k=2, min_score=0.5)
+        assert len(results) == 1
+        assert loader_calls == 1
+        assert store.matrix is not None
+        np.testing.assert_allclose(store.matrix[0], [0.6, 0.8, 0.0], rtol=1e-5)
+        assert results[0]["score"] == pytest.approx(0.6, rel=1e-3)
+
+        results2 = await store.search(query, top_k=2, min_score=0.5)
+        assert len(results2) == 1
+        assert loader_calls == 1
+
+        store.invalidate()
+        assert store.matrix is None
+        assert store.is_empty is False
+
+        results3 = await store.search(query, top_k=2, min_score=0.5)
+        assert len(results3) == 1
+        assert loader_calls == 2
+
+    @pytest.mark.asyncio
+    async def test_search_score_window_and_top_k(self):
+        from services.vector_store import SQLiteNumPyVectorStore
+
+        chunks = [
+            {
+                "content": "First",
+                "filename": "doc1.pdf",
+                "page_number": 1,
+                "chunk_index": 0,
+                "embedding": np.array([1.0, 0.0, 0.0], dtype=np.float32),
+                "embedding_model": "m",
+                "embedding_dim": 3,
+            },
+            {
+                "content": "Second",
+                "filename": "doc2.pdf",
+                "page_number": 1,
+                "chunk_index": 0,
+                "embedding": np.array([0.95, 0.05, 0.0], dtype=np.float32),
+                "embedding_model": "m",
+                "embedding_dim": 3,
+            },
+            {
+                "content": "Third",
+                "filename": "doc3.pdf",
+                "page_number": 1,
+                "chunk_index": 0,
+                "embedding": np.array([0.8, 0.2, 0.0], dtype=np.float32),
+                "embedding_model": "m",
+                "embedding_dim": 3,
+            },
+        ]
+        store = SQLiteNumPyVectorStore(
+            loader=AsyncMock(return_value=chunks),
+            embedding_model="m",
+            embedding_dim=3,
+        )
+        query = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+
+        # score_window=0.08 filters out Third (sim ~ 0.97, 0.8 < 0.97 - 0.08)
+        res = await store.search(query, top_k=1, min_score=0.5, score_window=0.08)
+        assert len(res) == 1
+        assert res[0]["content"] == "First"
+
+        res_all = await store.search(query, top_k=5, min_score=0.5, score_window=0.5)
+        assert len(res_all) == 3
+
+
 class TestQueryEmbeddingCache:
     @pytest.fixture(autouse=True)
     def setup_cache(self, monkeypatch):
