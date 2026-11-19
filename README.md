@@ -61,7 +61,7 @@ flowchart TD
     ErrorBoundary --> AdminH["Admin Router (/admin, /stats, /docs, batch upload, Retry Failed Leads)"]
 
     MainH --> HybridRAG["Hybrid RAG (SQLite Vector Store + LRU Cache)"]
-    HybridRAG --> Gemini["Gemini Flash Cascade (gemini-3.8-flash -> 2.5-flash -> latest)"]
+    HybridRAG --> Gemini["Gemini Flash Cascade (gemini-2.5-flash -> 3.8-flash -> latest)"]
 
     LeadH --> Outbox["Lead Outbox (SQLite -> Google Sheets)"]
     AdminH -->|"Retry Failed Leads"| Outbox
@@ -93,7 +93,7 @@ No external vector database (such as Pinecone, Qdrant, or Chroma) or separate da
 #### Transactional Lead Outbox Flow
 1. **Idempotent UUID:** Initiating the lead form generates a unique client-side `lead_uuid`.
 2. **Local Persistence First:** On form submission, the lead is immediately committed to the SQLite `leads` table with `status='pending'`.
-3. **Isolated Sync:** A background worker attempts export to Google Sheets via `gspread` (10-second timeout).
+3. **Isolated Sync:** An isolated thread-pool call attempts export to Google Sheets via `gspread` (10-second timeout).
    - On success: transitions to `status='sent'` with `sent_at` recorded.
    - On failure (timeout or network error): transitions to `status='failed'`, records `attempts` and `last_error`. The user still receives confirmation without seeing the internal sync error.
 4. **Admin Recovery:** If unsynced leads exist, the inline Admin Panel automatically surfaces the **Retry Failed Leads** (`admin:retry_leads`) button, serialized with an `asyncio.Lock` to safely push pending records without duplicates.
@@ -200,7 +200,7 @@ The prompt separates general consultation from exact factual claims:
 
 - **Hybrid Knowledge Base & LRU Query Cache:** Always loads company context from `knowledge_base.txt`, supplements it with relevant document facts, caches up to 128 recent query embeddings in an LRU cache (auto-invalidated on document mutations), and preserves exact citations without disabling general consultation.
 - **Batch Document Ingestion via Telegram:** Administrators can upload single or batch `.pdf` and `.docx` files simultaneously. An asynchronous ingestion queue (`asyncio.Lock`) serializes parsing, chunking, and embedding generation to avoid event-loop blocking and SQLite write conflicts. Re-uploading an existing filename replaces chunks automatically (`ON DELETE CASCADE`).
-- **Resilient Model Cascade & Token Budgets:** The bot executes an automatic 3-tier fallback chain (`gemini-3.8-flash` -> `gemini-2.5-flash` -> `gemini-flash-latest`) with a 1.5-second retry on 503 (Overloaded) or 429 (Rate Limit) errors, while enforcing configurable `MAX_HISTORY_CHARS` and `MAX_OUTPUT_TOKENS` limits.
+- **Resilient Model Cascade & Token Budgets:** The bot executes an automatic 3-tier fallback chain (`gemini-2.5-flash` -> `gemini-3.8-flash` -> `gemini-flash-latest`) with a 1.5-second retry on 503 (Overloaded) or 429 (Rate Limit) errors, while enforcing configurable `MAX_HISTORY_CHARS` and `MAX_OUTPUT_TOKENS` limits.
 - **Dialogue Memory & Context Reset (`/clear`):** Maintains up to 8 message exchanges per user (trimmed to `MAX_HISTORY_CHARS`) for contextual follow-up queries. Users can run `/clear` at any time to wipe both in-memory context and stored dialogue history and start fresh.
 - **Lead Intake Pipeline, Outbox & Admin Retry:** A 3-step conversation state machine validates client name, phone number (via regex `^\+?[0-9\s\-\(\)]{7,20}$`), and project details, persists leads locally via SQLAlchemy outbox before syncing to Google Sheets, and notifies the admin. Commands `/start`, `/clear`, `/cancel`, `/help`, and `/language` cleanly exit the FSM from any step. Failed syncs can be retried in one tap via the **Retry Failed Leads** button in the Admin Panel.
 - **Private-Chat Isolation & Concurrency Safety:** Routers enforce `ChatType.PRIVATE` filtering, and aiogram's `SimpleEventIsolation` prevents race conditions when a user sends overlapping updates.
@@ -284,7 +284,7 @@ BOT_TOKEN=123456789:ABCDefghIJKlmnoPQRstuvwxYZ
 GEMINI_API_KEY=AIzaSyYourGeminiApiKeyHere
 ADMIN_ID=987654321
 GOOGLE_SHEET_NAME=Leads
-GEMINI_MODELS=gemini-3.8-flash,gemini-2.5-flash,gemini-flash-latest
+GEMINI_MODELS=gemini-2.5-flash,gemini-3.8-flash,gemini-flash-latest
 EMBEDDING_MODEL=gemini-embedding-001
 EMBEDDING_DIM=3072
 MAX_HISTORY_CHARS=6000
