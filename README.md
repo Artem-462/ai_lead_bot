@@ -35,6 +35,10 @@ When a client asks about pricing, services, or technical details, the bot refere
 | <img src="docs/screenshots/rag_answer.jpg" alt="Hybrid RAG Answer" width="360"> | <img src="docs/screenshots/lead_form.jpg" alt="Lead Qualification Form" width="360"> |
 | Grounded answers from `knowledge_base.txt` + PDF/DOCX with exact page citations | 3-step validated form with SQLite Lead Outbox UUID & admin alert |
 
+> [!NOTE]
+> **Understanding the RAG Consultation Screenshot:**
+> The screenshot illustrates **Dynamic Document Priority (RAG Override)**. In this scenario, the administrator uploaded a corporate service catalogue (`Prais_IT_Poslug.pdf`). When the client asked about prices, the bot prioritized the specific corporate pricing from `Prais_IT_Poslug.pdf (p. 2)` ($250, $600, $1200) over the fallback developer rates in `knowledge_base.txt` ($50–$150) and cited the exact document page (`📄 Source: Prais_IT_Poslug.pdf (p. 2)`). When no documents are uploaded, the bot answers directly using `knowledge_base.txt`.
+
 ### Admin Control Panel
 
 | Admin Panel | Live Statistics | Indexed Knowledge Base |
@@ -56,8 +60,8 @@ flowchart TD
     ErrorBoundary --> LeadH["Lead FSM Router (3-step qualification + command escape)"]
     ErrorBoundary --> AdminH["Admin Router (/admin, /stats, /docs, batch upload, Retry Failed Leads)"]
 
-    MainH --> HybridRAG["Hybrid RAG (SQLite + LRU Query Cache)"]
-    HybridRAG --> Gemini["Gemini 2.5 Flash Cascade (MAX_HISTORY_CHARS + MAX_OUTPUT_TOKENS)"]
+    MainH --> HybridRAG["Hybrid RAG (SQLite Vector Store + LRU Cache)"]
+    HybridRAG --> Gemini["Gemini Flash Cascade (gemini-3.8-flash -> 2.5-flash -> latest)"]
 
     LeadH --> Outbox["Lead Outbox (SQLite -> Google Sheets)"]
     AdminH -->|"Retry Failed Leads"| Outbox
@@ -69,15 +73,39 @@ flowchart TD
 
 ### Database & Transactional Lead Outbox
 
-Persistence is managed with **SQLAlchemy 2.0 Async** (`aiosqlite`) and **Alembic** migrations using Code-First ORM models defined in [`services/models.py`](services/models.py) (`User`, `History`, `Document`, `DocumentChunk`, `Lead`).
+All persistent application data — including user language settings, dialogue history, vector embeddings, and lead buffers — is stored locally in a single **SQLite** database (`data/chat_history.db`) managed through **SQLAlchemy 2.0 Async** (`aiosqlite`) and versioned with **Alembic** migrations (`alembic/versions/0001_code_first.py`).
 
-- **Automatic migrations:** `init_db()` runs Alembic upgrades (`alembic/versions/0001_code_first.py`) on startup and configures every SQLite connection with `PRAGMA journal_mode=WAL` and `PRAGMA foreign_keys=ON`.
-- **Lead Outbox reliability:** Starting the lead form generates an idempotent `lead_uuid`. On submission, the lead is committed locally to the `leads` table (`status='pending'`) before calling Google Sheets.
-- **Fault isolation & Admin Retry:** Google Sheets exports run in a thread pool under a 10-second timeout. On success, the lead transitions to `sent` (`sent_at` recorded); on timeout or API error, it is marked `failed` with `attempts` and `last_error`, the client still gets confirmation, and the admin alert flags that the lead is safely stored locally. Administrators can re-sync failed leads directly from the inline Admin Panel via the **Retry Failed Leads** (`admin:retry_leads`) button, guarded by an `asyncio.Lock` to prevent duplicate exports.
+No external vector database (such as Pinecone, Qdrant, or Chroma) or separate database server (such as PostgreSQL) is required. High-dimensional vector embeddings are serialized as float32 binary arrays (`LargeBinary`) and stored directly in SQLite alongside document metadata, providing a self-contained, zero-dependency deployment.
 
-### Hybrid Knowledge Base
+- **Connection Pragmas:** Connections are automatically initialized with `PRAGMA journal_mode=WAL` (Write-Ahead Logging for non-blocking concurrent reads and writes) and `PRAGMA foreign_keys=ON` with a 10-second busy timeout.
+- **Alembic Code-First Migrations:** `init_db()` executes Alembic upgrades programmatically on bot startup (`command.upgrade(config, "head")`), ensuring tables and constraints match the ORM definitions in [`services/models.py`](services/models.py).
 
-Every consultation includes the company description from `knowledge_base.txt`. Uploaded documents supplement this context instead of disabling it.
+#### SQLite Database Schema (5 Tables)
+
+| Table | ORM Model | Keys & Constraints | Description |
+|---|---|---|---|
+| `users` | `User` | `user_id` (PK, BigInteger) | Registered Telegram users, language preference (`uk` / `en`), `first_seen`, and `last_active` timestamps. |
+| `history` | `History` | `id` (PK), `user_id` (Index), `timestamp` (Index) | Contextual dialogue exchanges (`role`: `'user'` / `'assistant'`, `content`). Kept within `MAX_HISTORY_CHARS` and wiped via `/clear`. |
+| `documents` | `Document` | `id` (PK), `filename` (Unique NOCASE) | Metadata of uploaded PDF/DOCX files: `file_type`, `chunk_count`, `embedding_model` (`gemini-embedding-001`), `embedding_dim` (`3072`), `uploaded_at`. |
+| `document_chunks` | `DocumentChunk` | `id` (PK), `doc_id` (FK `documents.id` ON DELETE CASCADE) | RAG knowledge chunks: `chunk_index`, `page_number`, `content` (text up to 800 chars), and `embedding` (**LargeBinary BLOB storing float32 NumPy vectors**). |
+| `leads` | `Lead` | `id` (PK), `lead_uuid` (Unique), `user_id` (Index), `status` (Index) | Transactional Outbox: `name`, `phone`, `request_text`, `status` (`'pending'`, `'sent'`, `'failed'`), `attempts`, `last_error`, `created_at`, `sent_at`. |
+
+#### Transactional Lead Outbox Flow
+1. **Idempotent UUID:** Initiating the lead form generates a unique client-side `lead_uuid`.
+2. **Local Persistence First:** On form submission, the lead is immediately committed to the SQLite `leads` table with `status='pending'`.
+3. **Isolated Sync:** A background worker attempts export to Google Sheets via `gspread` (10-second timeout).
+   - On success: transitions to `status='sent'` with `sent_at` recorded.
+   - On failure (timeout or network error): transitions to `status='failed'`, records `attempts` and `last_error`. The user still receives confirmation without seeing the internal sync error.
+4. **Admin Recovery:** If unsynced leads exist, the inline Admin Panel automatically surfaces the **Retry Failed Leads** (`admin:retry_leads`) button, serialized with an `asyncio.Lock` to safely push pending records without duplicates.
+
+### Hybrid Knowledge Base: Dual-Layer Retrieval Architecture
+
+The bot's consultation intelligence is organized into two distinct layers:
+
+1. **Static Baseline Profile ([`knowledge_base.txt`](knowledge_base.txt)):** Contains the developer's background (Artem, Python/Telegram Bot Developer), work schedule, guarantees, and baseline starting rates ($50 Bot-BizCard, $100 AI Bot, $150 Custom Solution). It is permanently loaded into the system prompt and hot-reloads via an mtime cache whenever edited on disk.
+2. **Dynamic Vector Knowledge Base (SQLite `documents` + `document_chunks`):** Corporate PDF/DOCX files uploaded through Telegram by the administrator (e.g., service catalogues or detailed commercial price sheets like `Prais_IT_Poslug.pdf`). Text chunks are vectorized using `gemini-embedding-001` (3072 dim) and stored as binary BLOBs in SQLite.
+
+**Fact Priority Hierarchy:** When an uploaded document contains relevant facts for a user's question, vector search retrieves those chunks, and the prompt instructs Gemini to **prioritize the uploaded document over the static baseline profile**. This is why the demo screenshot displays the corporate rates from `Prais_IT_Poslug.pdf (p. 2)` ($250, $600, $1200) instead of the $50–$150 starting rates. If documents are deleted, the bot immediately falls back to `knowledge_base.txt`.
 
 ```mermaid
 flowchart TD
@@ -256,7 +284,7 @@ BOT_TOKEN=123456789:ABCDefghIJKlmnoPQRstuvwxYZ
 GEMINI_API_KEY=AIzaSyYourGeminiApiKeyHere
 ADMIN_ID=987654321
 GOOGLE_SHEET_NAME=Leads
-GEMINI_MODELS=gemini-2.5-flash,gemini-3.8-flash,gemini-flash-latest
+GEMINI_MODELS=gemini-3.8-flash,gemini-2.5-flash,gemini-flash-latest
 EMBEDDING_MODEL=gemini-embedding-001
 EMBEDDING_DIM=3072
 MAX_HISTORY_CHARS=6000
