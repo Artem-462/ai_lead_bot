@@ -214,20 +214,17 @@ class TestDocxExtraction:
         doc = Document()
         doc.add_paragraph("First page content")
 
-        # Explicit page break
         p_break = doc.add_paragraph("Paragraph before break")
         p_break.add_run().add_break(WD_BREAK.PAGE)
 
         doc.add_paragraph("Second page content")
 
-        # Add a table
         table = doc.add_table(rows=2, cols=2)
         table.rows[0].cells[0].text = "Feature"
         table.rows[0].cells[1].text = "Status"
         table.rows[1].cells[0].text = "RAG Engine"
         table.rows[1].cells[1].text = "Active"
 
-        # Add cached Word rendered break
         p_rendered = doc.add_paragraph()
         run_rendered = p_rendered.add_run()
         rendered_break = OxmlElement("w:lastRenderedPageBreak")
@@ -675,7 +672,6 @@ class TestDbRAGStore:
             {"page_number": 2, "chunk_index": 1, "content": "Chunk 2", "embedding": sample_emb},
         ]
 
-        # Initial insert
         res1 = await real_db.upsert_document("catalog.pdf", "pdf", initial_chunks)
         assert res1["is_replaced"] is False
         assert res1["chunk_count"] == 2
@@ -688,7 +684,6 @@ class TestDbRAGStore:
         all_chunks = await real_db.get_all_chunks_with_metadata()
         assert len(all_chunks) == 2
 
-        # Re-uploading same filename replaces completely
         updated_chunks = [
             {"page_number": 1, "chunk_index": 0, "content": "New Chunk Only", "embedding": sample_emb}
         ]
@@ -704,13 +699,11 @@ class TestDbRAGStore:
         assert len(chunks_after) == 1
         assert chunks_after[0]["content"] == "New Chunk Only"
 
-        # Deletion
         del_res = await real_db.delete_document_by_name("catalog.pdf")
         assert del_res is True
         assert await real_db.list_documents() == []
         assert await real_db.get_all_chunks_with_metadata() == []
 
-        # Deleting nonexistent
         del_nonexistent = await real_db.delete_document_by_name("catalog.pdf")
         assert del_nonexistent is False
 
@@ -970,10 +963,12 @@ class TestVectorStoreAbstraction:
         )
         query = np.array([1.0, 0.0, 0.0], dtype=np.float32)
 
-        # score_window=0.08 filters out Third (sim ~ 0.97, 0.8 < 0.97 - 0.08)
         res = await store.search(query, top_k=1, min_score=0.5, score_window=0.08)
         assert len(res) == 1
         assert res[0]["content"] == "First"
+
+        res_window = await store.search(query, top_k=5, min_score=0.5, score_window=0.02)
+        assert [item["content"] for item in res_window] == ["First", "Second"]
 
         res_all = await store.search(query, top_k=5, min_score=0.5, score_window=0.5)
         assert len(res_all) == 3
@@ -1154,7 +1149,6 @@ class TestAdminRagHandlers:
 
     @pytest.mark.asyncio
     async def test_handle_document_upload(self):
-        # Non-admin
         msg_non_admin = make_message(user_id=111)
         msg_non_admin.document = MagicMock()
         msg_non_admin.document.file_name = "test.pdf"
@@ -1162,7 +1156,6 @@ class TestAdminRagHandlers:
             await admin_handler.handle_document_upload(msg_non_admin)
         assert msg_non_admin.answer.call_args[0][0] == t("non_text", "uk")
 
-        # Unsupported format
         msg_unsupported = make_message(user_id=999)
         msg_unsupported.document = MagicMock()
         msg_unsupported.document.file_name = "script.exe"
@@ -1170,7 +1163,6 @@ class TestAdminRagHandlers:
             await admin_handler.handle_document_upload(msg_unsupported)
         assert msg_unsupported.answer.call_args[0][0] == t("doc_unsupported", "uk")
 
-        # Valid PDF upload (new)
         msg_pdf = make_message(user_id=999)
         msg_pdf.document = MagicMock()
         msg_pdf.document.file_name = "pricing.pdf"
@@ -1187,7 +1179,6 @@ class TestAdminRagHandlers:
 
     @pytest.mark.asyncio
     async def test_admin_handlers_html_escape_filenames(self):
-        # 1. cmd_docs
         msg_docs = make_message(text="/docs", user_id=999)
         docs = [{"filename": "<doc>&test.pdf", "file_type": "pdf", "chunk_count": 3, "uploaded_at": "2026-10-21"}]
         with patch("config.ADMIN_ID", 999), \
@@ -1196,7 +1187,6 @@ class TestAdminRagHandlers:
         assert "&lt;doc&gt;&amp;test.pdf" in msg_docs.answer.call_args[0][0]
         assert "<doc>" not in msg_docs.answer.call_args[0][0]
 
-        # 2. cmd_del_doc
         msg_del = make_message(text="/del_doc <del>&doc.pdf", user_id=999)
         with patch("config.ADMIN_ID", 999), \
              patch("handlers.admin.delete_document_by_name", new_callable=AsyncMock, return_value=True):
@@ -1204,7 +1194,6 @@ class TestAdminRagHandlers:
         assert "&lt;del&gt;&amp;doc.pdf" in msg_del.answer.call_args[0][0]
         assert "<del>" not in msg_del.answer.call_args[0][0]
 
-        # 3. handle_document_upload
         msg_upload = make_message(user_id=999)
         msg_upload.document = MagicMock()
         msg_upload.document.file_name = "<upload>&file.pdf"

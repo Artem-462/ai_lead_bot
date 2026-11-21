@@ -14,14 +14,13 @@ class TestOutbox:
         lead2 = await real_db.create_lead(2, "User2", "222", "Req2")
         lead3 = await real_db.create_lead(3, "User3", "333", "Req3")
 
-        # Mark failed with different attempts
         await real_db.mark_lead_failed(lead1.id, "Err1")  # attempts=1
         await real_db.mark_lead_failed(lead2.id, "Err2")
         await real_db.mark_lead_failed(lead2.id, "Err2")
         await real_db.mark_lead_failed(lead2.id, "Err2")
         await real_db.mark_lead_failed(lead2.id, "Err2")  # attempts=4
         for _ in range(5):
-            await real_db.mark_lead_failed(lead3.id, "Err3")  # attempts=5
+            await real_db.mark_lead_failed(lead3.id, "Err3")
 
         import services.outbox as outbox_mod
 
@@ -32,7 +31,6 @@ class TestOutbox:
         sheet_mock = AsyncMock(return_value=True)
         monkeypatch.setattr(outbox_mod.sheets, "add_lead_to_sheet", sheet_mock)
 
-        # max_attempts=5 should only retry lead1 (1) and lead2 (4), skipping lead3 (5)
         sent, failed = await retry_failed_leads(max_attempts=5)
         assert sent == 2
         assert failed == 0
@@ -105,7 +103,6 @@ class TestOutbox:
             assert worker._task is not None
             task = worker._task
 
-            # Idempotent start
             worker.start()
             assert worker._task is task
 
@@ -116,7 +113,6 @@ class TestOutbox:
             assert worker._running is False
             assert worker._task is None
 
-            # Idempotent stop
             await worker.stop()
 
     @pytest.mark.asyncio

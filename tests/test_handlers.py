@@ -1250,11 +1250,11 @@ class TestAdminPanel:
         with patch("handlers.admin.config") as mock_cfg, \
              patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
              patch("handlers.admin.get_failed_leads", new_callable=AsyncMock) as mock_failed, \
-             patch("handlers.admin.add_lead_to_sheet", new_callable=AsyncMock) as mock_sheet:
+             patch("handlers.admin.retry_failed_leads", new_callable=AsyncMock) as mock_retry:
             mock_cfg.ADMIN_ID = 999
             await admin_handler.cb_admin_retry_leads(cb)
         mock_failed.assert_not_awaited()
-        mock_sheet.assert_not_awaited()
+        mock_retry.assert_not_awaited()
         cb.answer.assert_awaited_once_with(t("stats_no_access", "uk"), show_alert=True)
         cb.message.edit_text.assert_not_awaited()
 
@@ -1264,10 +1264,10 @@ class TestAdminPanel:
         with patch("handlers.admin.config") as mock_cfg, \
              patch("handlers.admin.get_user_language", new_callable=AsyncMock, return_value="uk"), \
              patch("handlers.admin.get_failed_leads", new_callable=AsyncMock, return_value=[]), \
-             patch("handlers.admin.add_lead_to_sheet", new_callable=AsyncMock) as mock_sheet:
+             patch("handlers.admin.retry_failed_leads", new_callable=AsyncMock) as mock_retry:
             mock_cfg.ADMIN_ID = 999
             await admin_handler.cb_admin_retry_leads(cb)
-        mock_sheet.assert_not_awaited()
+        mock_retry.assert_not_awaited()
         cb.answer.assert_awaited_once_with(t("admin_retry_leads_empty", "uk"))
         cb.message.edit_text.assert_awaited_once()
         assert cb.message.edit_text.call_args[0][0] == t("admin_retry_leads_empty", "uk")
@@ -1280,10 +1280,9 @@ class TestAdminPanel:
         await real_db.mark_lead_failed(second.id, "OSError: initial")
 
         for fn_name in ("get_failed_leads", "mark_lead_sent", "mark_lead_failed"):
-            monkeypatch.setattr(admin_handler, fn_name, getattr(real_db, fn_name))
             monkeypatch.setattr(outbox_module.db, fn_name, getattr(real_db, fn_name))
+        monkeypatch.setattr(admin_handler, "get_failed_leads", real_db.get_failed_leads)
         sheet_mock = AsyncMock(return_value=True)
-        monkeypatch.setattr(admin_handler, "add_lead_to_sheet", sheet_mock)
         monkeypatch.setattr(outbox_module.sheets, "add_lead_to_sheet", sheet_mock)
         monkeypatch.setattr(admin_handler.config, "ADMIN_ID", 999)
 
@@ -1321,10 +1320,9 @@ class TestAdminPanel:
         await real_db.mark_lead_failed(second.id, "OSError: first error")
 
         for fn_name in ("get_failed_leads", "mark_lead_sent", "mark_lead_failed"):
-            monkeypatch.setattr(admin_handler, fn_name, getattr(real_db, fn_name))
             monkeypatch.setattr(outbox_module.db, fn_name, getattr(real_db, fn_name))
+        monkeypatch.setattr(admin_handler, "get_failed_leads", real_db.get_failed_leads)
         sheet_mock = AsyncMock(side_effect=[True, RuntimeError("Google Sheets 503")])
-        monkeypatch.setattr(admin_handler, "add_lead_to_sheet", sheet_mock)
         monkeypatch.setattr(outbox_module.sheets, "add_lead_to_sheet", sheet_mock)
         monkeypatch.setattr(admin_handler.config, "ADMIN_ID", 999)
 
@@ -1354,9 +1352,8 @@ class TestAdminPanel:
         await real_db.mark_lead_failed(lead.id, "OSError: initial")
 
         for fn_name in ("get_failed_leads", "mark_lead_sent", "mark_lead_failed"):
-            monkeypatch.setattr(admin_handler, fn_name, getattr(real_db, fn_name))
             monkeypatch.setattr(outbox_module.db, fn_name, getattr(real_db, fn_name))
-        monkeypatch.setattr(admin_handler, "add_lead_to_sheet", sheets.add_lead_to_sheet)
+        monkeypatch.setattr(admin_handler, "get_failed_leads", real_db.get_failed_leads)
         monkeypatch.setattr(outbox_module.sheets, "add_lead_to_sheet", sheets.add_lead_to_sheet)
         monkeypatch.setattr(admin_handler.config, "ADMIN_ID", 999)
 

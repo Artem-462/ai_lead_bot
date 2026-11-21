@@ -42,6 +42,7 @@ def create_db_engine(url: str | URL) -> AsyncEngine:
         def configure_sqlite(connection: Any, _: Any) -> None:
             cursor = connection.cursor()
             try:
+                # WAL lets readers continue while SQLite's single writer commits.
                 cursor.execute("PRAGMA journal_mode=WAL")
                 cursor.execute("PRAGMA foreign_keys=ON")
             finally:

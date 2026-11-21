@@ -1,9 +1,36 @@
-# Secrets — never bake into the image
+# Secrets and examples are supplied outside the image
 .env
+.env.*
+**/.env
+**/.env.*
 credentials.json
+**/credentials.json
+credentials.json.example
+*.key
+**/*.key
+*.pem
+**/*.pem
+*.p12
+**/*.p12
+*.pfx
+**/*.pfx
 
 # Runtime data — managed by Docker volume
 data/
+*.db
+**/*.db
+*.db-*
+**/*.db-*
+*.sqlite
+**/*.sqlite
+*.sqlite-*
+**/*.sqlite-*
+*.sqlite3
+**/*.sqlite3
+*.sqlite3-*
+**/*.sqlite3-*
+*.log
+**/*.log
 
 # Virtual environments
 venv/
@@ -11,22 +38,67 @@ venv/
 
 # Python cache
 __pycache__/
-*.pyc
-*.pyo
+**/__pycache__/
+*.py[cod]
+**/*.py[cod]
 
 # Git
 .git
 .gitignore
+.github/
 
 # IDE & OS
 .idea/
 .vscode/
-*.DS_Store
+.DS_Store
+**/.DS_Store
+Thumbs.db
+**/Thumbs.db
+Desktop.ini
+**/Desktop.ini
+*.tmp
+**/*.tmp
+*.bak
+**/*.bak
+*.swp
+**/*.swp
 
 # Tests & linter caches
 tests/
+tests_integration/
+pytest.ini
+requirements-dev.txt
 .pytest_cache/
+**/.pytest_cache/
 .ruff_cache/
+**/.ruff_cache/
+.mypy_cache/
+**/.mypy_cache/
+.tox/
+.nox/
+.coverage*
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local agent instructions
+AGENTS.md
+**/AGENTS.md
+CLAUDE.md
+**/CLAUDE.md
+PROJECT_CONTEXT.md
+**/PROJECT_CONTEXT.md
+.opencode/
+**/.opencode/
+.claude/
+**/.claude/
+.agents/
+**/.agents/
+.codex/
+**/.codex/
 
 # Docs (not needed at runtime)
 README.md
+docs/

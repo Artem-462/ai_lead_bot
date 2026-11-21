@@ -114,7 +114,6 @@ class TestGetAiAnswer:
             ans = await llm.get_ai_answer(123, "Tell me about bots", "en")
             assert ans == "Hello, I can help you build a bot."
             mock_call.assert_awaited_once()
-            # Verify primary model was used
             assert mock_call.call_args[0][0] == "gemini-2.5-flash"
 
     @pytest.mark.asyncio
@@ -126,7 +125,6 @@ class TestGetAiAnswer:
             ans = await llm.get_ai_answer(123, "Need bot", "uk")
             assert ans == "Response after retry"
             assert mock_call.await_count == 2
-            # 1st model: attempt 1 failed, 1 retry after 1.5s
             mock_sleep.assert_awaited_once_with(1.5)
             assert mock_call.call_args_list[0][0][0] == "gemini-2.5-flash"
             assert mock_call.call_args_list[1][0][0] == "gemini-2.5-flash"
@@ -136,13 +134,11 @@ class TestGetAiAnswer:
         err_503 = APIError(message="503 UNAVAILABLE", code=503)
         with patch.object(llm, "_call_model", new_callable=AsyncMock) as mock_call, \
              patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            # Model 1 fails 2 times, Model 2 succeeds on first attempt
             mock_call.side_effect = [err_503, err_503, "Success from 2nd model"]
             ans = await llm.get_ai_answer(123, "Need bot", "uk")
             assert ans == "Success from 2nd model"
             assert mock_call.await_count == 3
             mock_sleep.assert_awaited_once_with(1.5)
-            # Verify model sequence: 2 calls to 2.5-flash, 1 call to 3.8-flash
             assert mock_call.call_args_list[0][0][0] == "gemini-2.5-flash"
             assert mock_call.call_args_list[1][0][0] == "gemini-2.5-flash"
             assert mock_call.call_args_list[2][0][0] == "gemini-3.8-flash"
@@ -152,13 +148,11 @@ class TestGetAiAnswer:
         err_429 = APIError(message="429 Too Many Requests", code=429)
         with patch.object(llm, "_call_model", new_callable=AsyncMock) as mock_call, \
              patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
-            # Model 1 fails 2 times, Model 2 fails 2 times, Model 3 succeeds
             mock_call.side_effect = [err_429, err_429, err_429, err_429, "Success from 3rd model"]
             ans = await llm.get_ai_answer(123, "Need bot", "uk")
             assert ans == "Success from 3rd model"
             assert mock_call.await_count == 5
             assert mock_sleep.await_count == 2
-            # 5th call was made to the 3rd model in the cascade
             assert mock_call.call_args_list[4][0][0] == "gemini-flash-latest"
 
     @pytest.mark.asyncio
@@ -166,7 +160,6 @@ class TestGetAiAnswer:
         err_503 = APIError(message="503 UNAVAILABLE", code=503)
         with patch.object(llm, "_call_model", new_callable=AsyncMock) as mock_call, \
              patch("asyncio.sleep", new_callable=AsyncMock):
-            # All 3 models fail 2 times each (6 calls total)
             mock_call.side_effect = [err_503] * 6
             ans = await llm.get_ai_answer(123, "Need bot", "uk")
             assert ans == t("llm_timeout", "uk")

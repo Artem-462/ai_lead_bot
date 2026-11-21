@@ -1,27 +1,57 @@
-# Secrets & tokens
+# Secrets
 .env
+.env.*
+!.env.example
 credentials.json
+*.key
+*.pem
+*.p12
+*.pfx
 
-# Database (SQLite lives in data/)
-data/*.db
-data/*.db-wal
-data/*.db-shm
-!data/.gitkeep
+# Runtime data
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.log
 
 # Virtual environments
 venv/
 .venv/
 
-# Python cache
+# Python caches and build output
 __pycache__/
-*.pyc
-*.pyo
-
-# Cache and tools
+*.py[cod]
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Local agent instructions
+AGENTS.md
+CLAUDE.md
+PROJECT_CONTEXT.md
+.opencode/
+.claude/
+.agents/
+.codex/
 
 # IDE & OS
 .vscode/
 .idea/
-*.DS_Store
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.tmp
+*.bak
+*.swp

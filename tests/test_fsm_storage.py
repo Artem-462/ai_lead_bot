@@ -68,7 +68,6 @@ class TestSQLAlchemyStorage:
             count = await session.scalar(select(func.count(FSMState.storage_key)))
         assert count == 1
 
-        # Clearing state retains row if data is still present
         await storage.set_state(key, None)
         assert await storage.get_state(key) is None
         assert await storage.get_data(key) == {"field": "value"}
@@ -76,7 +75,6 @@ class TestSQLAlchemyStorage:
             count = await session.scalar(select(func.count(FSMState.storage_key)))
         assert count == 1
 
-        # Clearing data when state is None deletes row
         await storage.set_data(key, {})
         assert await storage.get_data(key) == {}
         async with real_db.async_session() as session:
@@ -91,7 +89,6 @@ class TestSQLAlchemyStorage:
         await storage.set_state(key, "Form:state")
         await storage.set_data(key, {"field": "value"})
 
-        # Clearing data retains row if state is still present
         await storage.set_data(key, {})
         assert await storage.get_state(key) == "Form:state"
         assert await storage.get_data(key) == {}
@@ -99,7 +96,6 @@ class TestSQLAlchemyStorage:
             count = await session.scalar(select(func.count(FSMState.storage_key)))
         assert count == 1
 
-        # Clearing state when data is empty deletes row
         await storage.set_state(key, None)
         assert await storage.get_state(key) is None
         async with real_db.async_session() as session:

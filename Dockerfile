@@ -1,33 +1,24 @@
-# ── Stage 1: Base image ───────────────────────────────────────────────────────
-FROM python:3.11-slim AS base
+FROM python:3.11-slim
 
-# Prevent Python from writing .pyc files and enable unbuffered output
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# ── Stage 2: Dependencies ─────────────────────────────────────────────────────
-# Install deps in a separate layer so Docker can cache them efficiently.
-# This layer is only rebuilt when requirements.txt changes.
+# Keep dependency installation cached when application code changes.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ── Stage 3: Application code ─────────────────────────────────────────────────
 COPY . .
 
-# Create the data directory for SQLite persistence.
-# In docker-compose this is overridden by a named volume.
 RUN mkdir -p /app/data
 
-# Run as non-root user for security
 RUN adduser --disabled-password --gecos "" botuser \
     && chown -R botuser:botuser /app
 USER botuser
 
-# Verify config, core imports, and writable data directory
+# This checks imports and storage access, not polling or external API health.
 HEALTHCHECK --interval=60s --timeout=15s --start-period=20s --retries=3 \
     CMD python -c "import os, tempfile, config, main, services.db, services.rag; assert os.path.isdir('data'); tempfile.TemporaryFile(dir='data').close()"
 
-# ── Runtime ───────────────────────────────────────────────────────────────────
 CMD ["python", "main.py"]

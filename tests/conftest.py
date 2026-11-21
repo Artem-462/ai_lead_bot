@@ -19,7 +19,6 @@ _fake_config.ADMIN_ID = 999
 _fake_config.GOOGLE_SHEET_NAME = "Leads"
 _fake_config.GEMINI_MODEL = "gemini-2.5-flash"
 _fake_config.GEMINI_MODELS = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-flash-latest"]
-_fake_config.GEMINI_FALLBACK_MODEL = "gemini-3.8-flash"
 _fake_config.EMBEDDING_MODEL = "gemini-embedding-001"
 _fake_config.EMBEDDING_DIM = 3072
 _fake_config.MAX_HISTORY_CHARS = 6000
@@ -332,7 +331,6 @@ _db_mod_stub.delete_document_by_id = _mock.AsyncMock(return_value=True)  # type:
 _db_mod_stub.clear_all_documents = _mock.AsyncMock(return_value=0)  # type: ignore
 _db_mod_stub.list_documents = _mock.AsyncMock(return_value=[])  # type: ignore
 _db_mod_stub.get_all_chunks_with_metadata = _mock.AsyncMock(return_value=[])  # type: ignore
-_db_mod_stub.get_all_chunks_with_Metadata = _db_mod_stub.get_all_chunks_with_metadata  # type: ignore
 _db_mod_stub.has_documents = _mock.AsyncMock(return_value=False)  # type: ignore
 _db_mod_stub.invalidate_chunks_cache = _mock.MagicMock()  # type: ignore
 

@@ -26,26 +26,15 @@ from services.db import (
     get_failed_leads,
     get_user_language,
     list_documents,
-    mark_lead_failed,
-    mark_lead_sent,
 )
-from services.outbox import outbox_lock, retry_failed_leads
+from services.outbox import retry_failed_leads
 from services.rag import index_document
-from services.sheets import add_lead_to_sheet
-
-__all__ = [
-    "add_lead_to_sheet",
-    "mark_lead_failed",
-    "mark_lead_sent",
-    "outbox_lock",
-    "retry_failed_leads",
-]
 
 router = Router()
 router.message.filter(F.chat.type == ChatType.PRIVATE)
 router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
+# Parsing and embedding requests are serialized across admin uploads.
 _index_lock = asyncio.Lock()
-_retry_leads_lock = outbox_lock
 
 
 @router.message(Command("stats"))

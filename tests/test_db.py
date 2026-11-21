@@ -670,16 +670,12 @@ class TestUserDailyLimit:
 
         async with real_db.async_session.begin() as session:
             session.add_all([
-                # Yesterday's messages (should not be counted)
                 History(user_id=user_id, role="user", content="old user msg", timestamp=yesterday),
                 History(user_id=user_id, role="assistant", content="old bot reply", timestamp=yesterday),
-                # Today's assistant messages (should not be counted)
                 History(user_id=user_id, role="assistant", content="today bot reply", timestamp=now),
-                # Today's user messages (should be counted)
                 History(user_id=user_id, role="user", content="msg 1", timestamp=now),
                 History(user_id=user_id, role="user", content="msg 2", timestamp=now),
                 History(user_id=user_id, role="user", content="msg 3", timestamp=now),
-                # Another user's message today (should not be counted)
                 History(user_id=11111, role="user", content="other user", timestamp=now),
             ])
 

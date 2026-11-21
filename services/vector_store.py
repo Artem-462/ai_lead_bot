@@ -135,6 +135,7 @@ class SQLiteNumPyVectorStore:
             return
 
         raw_matrix = np.stack([c["embedding"] for c in compatible_chunks]).astype(np.float32, copy=False)
+        # Cache unit-length rows so cosine similarity is a matrix-vector product.
         norms = np.linalg.norm(raw_matrix, axis=1, keepdims=True)
         norms = np.where(norms == 0, 1e-9, norms)
         self._matrix = (raw_matrix / norms).astype(np.float32, copy=False)

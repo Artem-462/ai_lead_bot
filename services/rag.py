@@ -18,10 +18,14 @@ from google.genai import errors
 from httpx import TransportError
 
 from config import EMBEDDING_DIM, EMBEDDING_MODEL
-from services.db import get_all_chunks_with_metadata, upsert_document  # noqa: F401
+
+# The vector store resolves this loader lazily to avoid a circular import.
+from services.db import (
+    get_all_chunks_with_metadata,  # noqa: F401
+    upsert_document,
+)
 from services.llm import client
 from services.vector_store import (
-    SQLiteNumPyVectorStore,  # noqa: F401
     VectorStore,
     default_vector_store,
 )

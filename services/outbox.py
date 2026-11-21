@@ -3,6 +3,7 @@ import asyncio
 import config
 from services import db, sheets
 
+# Share one retry lock between the worker and admin callbacks in this process.
 outbox_lock = asyncio.Lock()
 
 
